@@ -14,7 +14,7 @@ pipeline = TransformPipeline(
     transforms=[CacheAligner(), SmartCrusher()]
 )
 
-result = pipeline.apply(messages=messages, model="gpt-4o")
+result = pipeline.apply(messages=messages, model="gpt-4o", model_limit=128000)
 print(f"Tokens: {result.tokens_before} → {result.tokens_after}")
 ```
 
@@ -123,9 +123,9 @@ aligner = CacheAligner(
     )
 )
 
-# Get alignment score (0.0–1.0) without running the full pipeline
+# Get alignment score (0.0–100.0) without running the full pipeline
 score = aligner.get_alignment_score(messages)
-print(f"Cache alignment score: {score:.2f}")
+print(f"Cache alignment score: {score:.1f}")
 ```
 
 ### get_alignment_score()
@@ -134,7 +134,7 @@ print(f"Cache alignment score: {score:.2f}")
 aligner.get_alignment_score(messages: list[dict[str, Any]]) -> float
 ```
 
-Returns a score from `0.0` (highly volatile prefix) to `1.0` (perfectly stable prefix). Useful for monitoring cache health without running the full pipeline.
+Returns a score from `0.0` (highly volatile prefix) to `100.0` (perfectly stable prefix). Each detected volatile pattern (UUID, timestamp, JWT, etc.) deducts 10 points. Useful for monitoring cache health without running the full pipeline.
 
 ---
 
@@ -181,15 +181,15 @@ TransformPipeline(
 pipeline.apply(
     messages: list[dict[str, Any]],
     model: str,
-    *,
-    model_limit: int = 200000,
-    output_buffer: int = 4000,
-    tool_profiles: dict[str, dict] | None = None,
     **kwargs,
 ) -> TransformResult
 ```
 
-Run the pipeline synchronously. Returns a [`TransformResult`](/api/python/config#transformresult).
+Run the pipeline synchronously. Returns a [`TransformResult`](/api/python/config#transformresult). The `model_limit` keyword argument is required and must be provided explicitly (there is no default — passing `None` raises `ValueError`). Common kwargs:
+
+- `model_limit: int` — context window size in tokens (**required**)
+- `output_buffer: int` — tokens to reserve for model output (default `4000`)
+- `tool_profiles: dict[str, dict]` — per-tool compression profiles
 
 ### simulate()
 
@@ -197,14 +197,11 @@ Run the pipeline synchronously. Returns a [`TransformResult`](/api/python/config
 pipeline.simulate(
     messages: list[dict[str, Any]],
     model: str,
-    *,
-    model_limit: int = 200000,
-    output_buffer: int = 4000,
-    tool_profiles: dict[str, dict] | None = None,
+    **kwargs,
 ) -> TransformResult
 ```
 
-Run the pipeline in dry-run mode. Returns the same `TransformResult` as `apply()` but does not persist anything.
+Run the pipeline in dry-run mode. Returns the same `TransformResult` as `apply()` but does not persist metrics. Accepts the same kwargs as `apply()`, including the required `model_limit`.
 
 ---
 
@@ -458,7 +455,7 @@ messages = [
     },
 ]
 
-result = pipeline.apply(messages=messages, model="gpt-4o")
+result = pipeline.apply(messages=messages, model="gpt-4o", model_limit=128000)
 
 print(f"Before: {result.tokens_before:,} tokens")
 print(f"After:  {result.tokens_after:,} tokens")

@@ -21,7 +21,7 @@ Headroom sits between your application and the LLM provider. It intercepts outgo
 |  ┌──────────────┐   ┌─────────────────────────────────────────────┐  |
 |  │  CacheAligner│──▶│  ContentRouter                              │  |
 |  │              │   │    ├─ SmartCrusher   (JSON arrays)          │  |
-|  │  Detects     │   │    ├─ CodeCompressor (AST, tree-sitter)     │  |
+|  │  Detects     │   │    ├─ CodeAwareCompressor (AST, tree-sitter) │  |
 |  │  volatile    │   │    ├─ LogCompressor  (build / test logs)    │  |
 |  │  tokens;     │   │    └─ Kompress-v2-base (prose, HF model)   │  |
 |  │  warns if    │   └─────────────────────────────────────────────┘  |
@@ -124,7 +124,7 @@ Warning: [CacheAligner] system prompt contains 1 volatile token (iso8601: "2025-
 `ContentRouter` dispatches each message block to the optimal compressor (see [How Compression Works](/concepts/how-compression-works)). This is where the bulk of token savings happen:
 
 - **SmartCrusher** for JSON arrays: field-level statistical analysis, Kneedle algorithm, anomaly/error preservation.
-- **CodeCompressor** for source code: AST parsing via tree-sitter, syntax-valid output.
+- **CodeAwareCompressor** for source code: AST parsing via tree-sitter, syntax-valid output.
 - **LogCompressor** for build/test logs: pattern clustering, error line preservation.
 - **Kompress-v2-base** for plain text: ONNX INT8 ModernBERT inference.
 
@@ -211,7 +211,7 @@ Client request
   ──► FastAPI route handler (headroom/proxy/server.py)
   ──► PipelineExtensionManager.emit(INPUT_RECEIVED)
   ──► CacheAligner.apply()
-  ──► ContentRouter.apply()  →  SmartCrusher / CodeCompressor / Kompress
+  ──► ContentRouter.apply()  →  SmartCrusher / CodeAwareCompressor / Kompress
   ──► CCR: cache originals, inject headroom_retrieve tool
   ──► PipelineExtensionManager.emit(PRE_SEND)
   ──► httpx upstream client → LLM provider
@@ -233,7 +233,7 @@ app.add_middleware(CompressionMiddleware)
 
 - **User messages** — never compressed by default (`compress_user_messages=False`)
 - **System prompt content** — preserved exactly; CacheAligner only emits warnings
-- **Code** — passes through unchanged unless `CodeCompressor` is explicitly enabled (`pip install "headroom-ai[code]"`)
+- **Code** — passes through unchanged unless `CodeAwareCompressor` is explicitly enabled (`pip install "headroom-ai[code]"`)
 - **Short content** — tool outputs under `min_tokens_to_compress` (default: 250 tokens) pass through unchanged
 - **Model responses** — returned to your client exactly as received from the provider
 - **Excluded tools** — `Read`, `Glob`, `Grep`, `Write`, and `Edit` tool outputs are excluded from compression by default (they contain exact file content needed for edit workflows)

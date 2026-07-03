@@ -206,6 +206,30 @@ config = SmartCrusherConfig(
   Configuration for the relevance scorer that determines which items match the user's query. See [RelevanceScorerConfig](#relevancescorerconfig).
 </ParamField>
 
+<ParamField path="anchor" type="AnchorConfig" default="AnchorConfig()">
+  Configuration for dynamic anchor allocation — controls how position-based preservation slots are distributed (front-heavy for search results, back-heavy for logs, balanced for time-series). The anchor budget is a percentage of `max_items_after_crush` reserved for positional anchors; the rest goes to importance-scored items.
+</ParamField>
+
+<ParamField path="compaction_core_field_fraction" type="float" default="0.8">
+  A field is considered "core" if it is present in at least this fraction of rows. Arrays with mostly non-core key sets are bucketed by a discriminator field rather than flattened.
+</ParamField>
+
+<ParamField path="compaction_heterogeneous_core_ratio" type="float" default="0.6">
+  When the fraction of rows sharing a common core is below this value, the array is treated as heterogeneous and bucketed rather than compacted with a shared header.
+</ParamField>
+
+<ParamField path="compaction_max_flatten_inner_keys" type="int" default="6">
+  Maximum number of inner keys to inline when flattening nested objects during tabular compaction.
+</ParamField>
+
+<ParamField path="compaction_min_buckets" type="int" default="2">
+  Minimum number of discriminator buckets used when compacting a heterogeneous array.
+</ParamField>
+
+<ParamField path="compaction_max_buckets" type="int" default="8">
+  Maximum number of discriminator buckets. Prevents over-splitting sparse arrays.
+</ParamField>
+
 ---
 
 ## CacheAlignerConfig

@@ -1,7 +1,7 @@
 ---
-title: "Headroom: Context Compression for LLM Agents"
+title: "Headroom: Local-First Context Compression for LLM Agents"
 sidebarTitle: "Introduction"
-description: "Headroom is a local-first context compression layer that cuts LLM token usage by 60–95% across tool outputs, logs, RAG chunks, files, and conversation history."
+description: "Headroom cuts LLM token usage by 60–95% with local-first context compression for tool outputs, logs, RAG chunks, files, and conversation history."
 ---
 
 Headroom sits between your agent and the LLM provider, intercepting every prompt before it is sent and compressing its contents — tool outputs, build logs, RAG chunks, file reads, and conversation history — using content-aware algorithms that preserve the information the model actually needs. This page explains what Headroom does, how it is deployed, the architecture that makes it work, and how it compares to alternative approaches.
@@ -119,7 +119,7 @@ Headroom meets you wherever you are. You do not need to restructure your code to
 
 ## Architecture
 
-```
+```text
 Your agent / app
   (Claude Code, Cursor, Codex, LangChain, Agno, Strands, your own code…)
        │   prompts · tool outputs · logs · RAG results · files

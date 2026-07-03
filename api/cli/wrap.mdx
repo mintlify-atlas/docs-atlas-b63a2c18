@@ -1,7 +1,7 @@
 ---
-title: "headroom wrap — One-Command Agent Integration"
+title: "headroom wrap — One-Command AI Agent Integration"
 sidebarTitle: "wrap"
-description: "Reference for headroom wrap and headroom unwrap: all supported tools, common flags, Claude-specific options, Copilot subscription mode, and the HEADROOM_CONTEXT_TOOL env var."
+description: "Full reference for headroom wrap and unwrap: supported tools, flags, Claude options, Copilot subscription mode, and the HEADROOM_CONTEXT_TOOL env var."
 ---
 
 `headroom wrap <tool>` is the fastest way to connect any supported AI coding agent to Headroom. It starts the proxy as a background process, configures the agent to route through it, installs the MCP retrieve tool and context tools (rtk or lean-ctx), then launches the agent — all in a single command.
@@ -88,10 +88,6 @@ These flags are accepted by most or all `wrap` subcommands.
 
 ## Claude-specific flags
 
-<ParamField query="--model" type="string">
-  Override the model passed to Claude Code via `ANTHROPIC_MODEL`. Useful for pinning a specific opus/sonnet variant.
-</ParamField>
-
 <ParamField query="--no-tokensave" type="flag">
   Skip registration of the tokensave code-graph MCP compressor.
 </ParamField>
@@ -105,8 +101,11 @@ These flags are accepted by most or all `wrap` subcommands.
 </ParamField>
 
 ```bash
-# Claude with 1M context and specific model
-headroom wrap claude --1m --model claude-opus-4-5
+# Claude with 1M context
+headroom wrap claude --1m
+
+# Claude with specific model (passed through to claude binary)
+headroom wrap claude -- --model claude-opus-4-5
 
 # Claude with memory and traffic learning
 headroom wrap claude --memory --learn
@@ -126,13 +125,21 @@ headroom wrap claude -- --dangerously-skip-permissions
   Use GitHub Copilot's subscription (hosted) API rather than a BYOK provider. Triggers the OAuth device-code flow if no saved token exists.
 </ParamField>
 
-<ParamField query="--model" type="string">
-  Override the Copilot model (e.g. `claude-sonnet-4-5`, `gpt-4o`). Use `auto` to let Copilot pick.
+<ParamField query="--provider-type" type="auto | anthropic | openai" default="auto">
+  Copilot BYOK provider mode. `auto` selects `anthropic` for the default backend and `openai` for translated backends.
+</ParamField>
+
+<ParamField query="--wire-api" type="completions | responses">
+  OpenAI-compatible Copilot wire API. Defaults to `completions` when `--provider-type` resolves to `openai`.
 </ParamField>
 
 <ParamField query="--backend" type="string">
-  Force a specific BYOK backend: `anthropic`, `openai`, or `openrouter`.
+  Force a specific BYOK backend: `anthropic`, `anyllm`, or `litellm-<provider>`.
 </ParamField>
+
+<Note>
+  To pass a model to the underlying agent (Claude Code or Copilot CLI), append it after `--`: `headroom wrap claude -- --model claude-opus-4-5` or `headroom wrap copilot -- --model gpt-4o`.
+</Note>
 
 ```bash
 # GitHub Copilot with subscription authentication

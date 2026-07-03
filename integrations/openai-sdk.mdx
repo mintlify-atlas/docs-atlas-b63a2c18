@@ -38,9 +38,9 @@ Headroom integrates with the OpenAI SDK through a single wrapper function — `w
 
     ```python
     from openai import OpenAI
-    from headroom import HeadroomClient
+    from headroom import HeadroomClient, OpenAIProvider
 
-    client = HeadroomClient(OpenAI())
+    client = HeadroomClient(OpenAI(), provider=OpenAIProvider())
 
     # Messages are compressed automatically before sending
     response = client.chat.completions.create(

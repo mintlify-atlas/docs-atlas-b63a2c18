@@ -139,6 +139,22 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 
 ---
 
+## Kompress & tool protection
+
+<ParamField query="--disable-kompress" type="flag">
+  Disable Kompress ML compression while keeping structural compression (ToolCrusher, SmartCrusher, CacheAligner) active. Env: `HEADROOM_DISABLE_KOMPRESS=1`.
+</ParamField>
+
+<ParamField query="--protect-tool-results" type="string">
+  Comma-separated tool names whose results are never lossy-compressed. Merged with built-in defaults (e.g. `Bash,WebFetch`). Env: `HEADROOM_PROTECT_TOOL_RESULTS`.
+</ParamField>
+
+<ParamField query="--no-ccr-proactive-expansion" type="flag">
+  Disable proactive expansion of previously compressed content. Env: `HEADROOM_NO_CCR_PROACTIVE_EXPANSION`.
+</ParamField>
+
+---
+
 ## Read lifecycle
 
 <ParamField query="--no-read-lifecycle" type="flag">

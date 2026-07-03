@@ -1,5 +1,5 @@
 ---
-title: "Install Headroom via pip, npm, or Docker"
+title: "Headroom Installation Guide: pip, npm, Docker, and Extras"
 sidebarTitle: "Installation"
 description: "Full installation guide for Headroom: pip extras, pipx, uv, npm, Docker image tags, environment variables, and corporate SSL inspection workarounds."
 ---
@@ -29,7 +29,7 @@ The core package includes the `compress()` function, SmartCrusher, CacheAligner,
 pip install "headroom-ai[all]"
 ```
 
-Installs all compressors, the proxy server, ML compression, image compression, and the evaluation framework. Does **not** include `[vector]` (requires a C++ toolchain) or `[pytorch-mps]` (macOS-only GPU offload).
+Installs the proxy server, all compressors (code, ML, image, voice, HTML, spreadsheet), memory, relevance scoring, MCP tools, reports, OpenTelemetry, and the evaluation framework. Does **not** include `[vector]` (requires a C++ toolchain), `[pytorch-mps]` (macOS-only GPU offload), or framework adapters (`[langchain]`, `[agno]`, `[strands]`, `[anyllm]`, `[bedrock]`).
 
 ### Python Extras
 
@@ -52,11 +52,16 @@ pip install "headroom-ai[proxy,langchain,ml]"
 | `otel` | OpenTelemetry exporter (OTLP) | `pip install "headroom-ai[otel]"` |
 | `voice` | Voice/audio filler detection | `pip install "headroom-ai[voice]"` |
 | `mcp` | MCP server tools (`headroom_compress`, `headroom_retrieve`, `headroom_stats`) | `pip install "headroom-ai[mcp]"` |
-| `langchain` | LangChain `HeadroomChatModel` wrapper | `pip install "headroom-ai[langchain]"` |
-| `agno` | Agno `HeadroomAgnoModel` wrapper | `pip install "headroom-ai[agno]"` |
+| `langchain` | LangChain `HeadroomChatModel` wrapper — **not in `[all]`** | `pip install "headroom-ai[langchain]"` |
+| `agno` | Agno `HeadroomAgnoModel` wrapper — **not in `[all]`** | `pip install "headroom-ai[agno]"` |
+| `strands` | AWS Strands Agents SDK integration — **not in `[all]`** | `pip install "headroom-ai[strands]"` |
+| `anyllm` | any-llm multi-provider backend (Python 3.11+) — **not in `[all]`** | `pip install "headroom-ai[anyllm]"` |
+| `bedrock` | AWS Bedrock backend (boto3 + CRT) — **not in `[all]`** | `pip install "headroom-ai[bedrock]"` |
+| `html` | HTML content extraction (trafilatura) | `pip install "headroom-ai[html]"` |
+| `spreadsheet` | Binary spreadsheet ingestion (`.xlsx` / `.xls`) | `pip install "headroom-ai[spreadsheet]"` |
 | `evals` | Evaluation framework (GSM8K, SQuAD, BFCL benchmarks) | `pip install "headroom-ai[evals]"` |
 | `pytorch-mps` | Apple-GPU (MPS) memory-embedder offload — macOS only, **not in `[all]`**; opt in with `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps` | `pip install "headroom-ai[pytorch-mps]"` |
-| `all` | Everything above (minus `vector` and `pytorch-mps`) | `pip install "headroom-ai[all]"` |
+| `all` | `proxy`, `code`, `ml`, `memory`, `relevance`, `image`, `reports`, `otel`, `evals`, `voice`, `html`, `mcp`, `spreadsheet` — excludes `vector`, `pytorch-mps`, and framework adapters | `pip install "headroom-ai[all]"` |
 
 <Note>
   `[all]` covers the core stack but excludes framework adapters. Install them separately: `pip install "headroom-ai[langchain]"` (also `[agno]`, `[strands]`, `[anyllm]`, `[bedrock]`).
@@ -103,7 +108,7 @@ headroom doctor    # full health check — confirms routing and model loading wo
 
 There are no prebuilt Windows wheels yet. `pip install headroom-ai` falls back to building the Rust extension from the sdist, which requires the MSVC toolchain on `PATH`. Without it you will see:
 
-```
+```text
 error: linker `link.exe` not found
 note: please ensure that Visual Studio 2017 or later, or Build Tools for
 Visual Studio were installed with the Visual C++ option

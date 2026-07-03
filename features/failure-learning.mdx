@@ -1,7 +1,7 @@
 ---
-title: "Learn from Agent Failures with headroom learn"
+title: "Learn from Coding Agent Failures with headroom learn"
 sidebarTitle: "Failure Learning"
-description: "Offline failure analysis for coding agents. Mines failed sessions, maps each failure to its fix, and writes specific project-level corrections automatically."
+description: "Offline failure analysis for coding agents. Mines failed sessions, maps each failure to its fix, and writes project-level corrections automatically."
 ---
 
 Every coding agent session leaves behind a trail of failed tool calls — wrong file paths, broken commands, stubborn retries. `headroom learn` reads those transcripts, finds what the model did to *fix* each failure, and writes specific corrections to your project's memory files so the same mistakes don't happen next session.
@@ -164,7 +164,7 @@ Options:
                      or any registered plugin
   --model TEXT       LLM model for analysis
                      (e.g. claude-sonnet-4-6, gpt-4o, gemini/gemini-flash-latest)
-  --workers INT      Parallel workers for session scanning (default: auto)
+  -j, --workers INT  Parallel workers for session scanning (default: auto)
   --main-only        Only scan top-level sessions, skip subagent transcripts
   --verbosity        Learn preferred output verbosity instead of analyzing failures
   --llm-judge        With --verbosity: let an LLM override the heuristic level

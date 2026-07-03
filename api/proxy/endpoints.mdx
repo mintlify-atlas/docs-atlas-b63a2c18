@@ -1,7 +1,7 @@
 ---
-title: "Headroom Proxy HTTP API Endpoints Reference"
+title: "Headroom Proxy HTTP API — Endpoints Full Reference"
 sidebarTitle: "Endpoints"
-description: "Full reference for the Headroom proxy HTTP API: compression endpoints, stats, health, admin routes, and CCR retrieval endpoints."
+description: "Full reference for the Headroom proxy HTTP API: provider passthrough, compression, stats, health checks, admin routes, and CCR retrieval endpoints."
 ---
 
 The Headroom proxy exposes an HTTP API on `http://127.0.0.1:8787` by default. Most clients interact with it through the provider-compatible endpoints (`/v1/chat/completions`, `/v1/messages`) by setting environment variables. Additional endpoints provide stats, health checks, and admin controls.
@@ -69,38 +69,50 @@ Returns session statistics as JSON. Available to any client (not loopback-restri
 curl http://localhost:8787/stats
 ```
 
-**Response fields:**
+**Selected response fields** (the full payload is deeply nested — these are the most commonly accessed paths):
 
-<ResponseField name="requests_total" type="integer">
+<ResponseField name="requests.total" type="integer">
   Total number of requests processed since the proxy started.
 </ResponseField>
 
-<ResponseField name="tokens_saved_total" type="integer">
-  Total input tokens saved across all requests.
+<ResponseField name="requests.cached" type="integer">
+  Requests served from the semantic cache.
 </ResponseField>
 
-<ResponseField name="tokens_before_total" type="integer">
-  Total input tokens before compression.
+<ResponseField name="requests.failed" type="integer">
+  Requests that resulted in an error.
 </ResponseField>
 
-<ResponseField name="tokens_after_total" type="integer">
-  Total input tokens after compression.
+<ResponseField name="requests.by_provider" type="object">
+  Request counts keyed by provider name (e.g. `anthropic`, `openai`).
 </ResponseField>
 
-<ResponseField name="compression_ratio" type="float">
-  Overall compression ratio (0.0–1.0, where 0.9 = 90% reduction).
+<ResponseField name="tokens.input" type="integer">
+  Total input tokens sent to the upstream provider (after compression).
 </ResponseField>
 
-<ResponseField name="cost_saved_usd" type="float">
-  Estimated dollar savings based on LiteLLM pricing. Requires Python 3.13 or earlier.
+<ResponseField name="tokens.saved" type="integer">
+  Total tokens saved across all compression layers (proxy + CLI context tool).
 </ResponseField>
 
-<ResponseField name="uptime_seconds" type="float">
-  Proxy uptime in seconds.
+<ResponseField name="tokens.proxy_compression_saved" type="integer">
+  Tokens saved by proxy compression alone (excludes CLI context-tool savings).
 </ResponseField>
 
-<ResponseField name="session_start" type="string">
-  ISO 8601 timestamp when this proxy session started.
+<ResponseField name="tokens.savings_percent" type="float">
+  All-layers savings as a percentage of original token count.
+</ResponseField>
+
+<ResponseField name="savings.total_tokens" type="integer">
+  Combined tokens saved by all layers (proxy compression + CLI filtering).
+</ResponseField>
+
+<ResponseField name="display_session" type="object">
+  Canonical persisted display-session metrics for the dashboard — includes human-readable summaries and per-project breakdowns.
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  Human-readable session summary used by the savings dashboard.
 </ResponseField>
 
 Pass `?cached=true` to return the last cached stats payload without recomputing (faster, slightly stale):
@@ -111,14 +123,23 @@ curl "http://localhost:8787/stats?cached=true"
 
 ### GET /stats-history
 
-Returns a time series of stats snapshots for trend analysis.
+Returns durable compression history plus display-session state. Supports JSON and CSV output.
 
 ```bash
-curl "http://localhost:8787/stats-history?limit=100"
+curl "http://localhost:8787/stats-history"
+curl "http://localhost:8787/stats-history?series=daily&format=csv"
 ```
 
-<ParamField query="limit" type="integer" default="60">
-  Maximum number of historical data points to return.
+<ParamField query="format" type="json | csv" default="json">
+  Response format. `csv` returns a downloadable file attachment; `json` returns the full history payload.
+</ParamField>
+
+<ParamField query="series" type="history | hourly | daily | weekly | monthly" default="history">
+  Which time-series aggregation to return. `history` returns the raw per-request history; the others return pre-bucketed roll-ups.
+</ParamField>
+
+<ParamField query="history_mode" type="compact | full | none" default="compact">
+  How much detail to include in each history entry. `compact` includes key savings fields; `full` includes all fields; `none` omits the history array (returns only the display-session summary).
 </ParamField>
 
 ### GET /metrics

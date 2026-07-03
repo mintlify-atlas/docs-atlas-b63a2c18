@@ -1,5 +1,5 @@
 ---
-title: "Troubleshoot Common Headroom Issues"
+title: "Troubleshoot Headroom: Proxy, SSL, and Savings Issues"
 sidebarTitle: "Troubleshooting"
 description: "Diagnose and fix common Headroom issues: proxy not routing, SSL errors, $0.00 dollar savings, TypeScript SDK proxy requirement, and known limitations."
 ---
@@ -70,7 +70,7 @@ curl http://127.0.0.1:8787/stats | jq '.session.tokens_saved_total'
 
 **Symptom**: `pip install "headroom-ai[all]"` fails with:
 
-```
+```text
 CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
 ```
 
@@ -107,7 +107,7 @@ Two runtime assets are also fetched over TLS. If they are blocked, trust your co
 
 **Symptom**: TLS fails at runtime — not during install — with:
 
-```
+```text
 [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
 Basic Constraints of CA cert not marked critical
 ```
@@ -234,7 +234,7 @@ pipx install --python python3.13 "headroom-ai[all]"
 
 **Symptom**: `pip install headroom-ai` fails with a Rust/Cargo compilation error such as:
 
-```
+```text
 error: could not find `Cargo.toml` in ...
 ```
 

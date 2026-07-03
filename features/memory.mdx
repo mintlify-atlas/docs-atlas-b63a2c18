@@ -1,5 +1,5 @@
 ---
-title: "Persistent Cross-Conversation Memory for LLM Apps"
+title: "Persistent Memory for LLM Apps Across Conversations"
 sidebarTitle: "Memory"
 description: "Hierarchical temporal memory for LLM applications. Store, scope, and search facts across conversations — User, Session, Agent, and Turn levels."
 ---
@@ -231,7 +231,6 @@ all_memories = client.memory.get_all()
 # Stats
 stats = client.memory.stats()
 print(f"Total memories: {stats['total']}")
-print(f"By category: {stats['categories']}")
 ```
 
 ## Cross-Agent Memory

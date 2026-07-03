@@ -1,7 +1,7 @@
 ---
-title: "headroom CLI Utility Commands Reference"
+title: "headroom CLI Utility Commands — doctor, savings, update"
 sidebarTitle: "Utilities"
-description: "Reference for headroom doctor, perf, savings, output-savings, dashboard, update, init, copilot-auth, and capture CLI commands."
+description: "Reference for headroom utility commands: doctor, perf, savings, output-savings, dashboard, update, init, and copilot-auth — flags and usage for each."
 ---
 
 Headroom ships a set of utility commands for diagnosing your setup, tracking savings, managing updates, and configuring persistent installations. These commands complement the main `proxy`, `wrap`, `mcp`, and `learn` commands.
@@ -98,7 +98,7 @@ See [Output Token Reduction](/features/output-token-reduction) for full details.
 
 ## headroom dashboard
 
-`headroom dashboard` opens a live savings dashboard in your terminal. The proxy must be running.
+`headroom dashboard` opens the live savings dashboard in your browser. The proxy must be running.
 
 ```bash
 headroom dashboard
@@ -107,6 +107,10 @@ headroom dashboard --port 8080   # if running on a non-default port
 
 <ParamField query="--port" type="integer" default="8787">
   Port the proxy is running on.
+</ParamField>
+
+<ParamField query="--no-open" type="flag">
+  Print the dashboard URL instead of opening a browser window. Useful in headless or SSH environments.
 </ParamField>
 
 The dashboard shows:

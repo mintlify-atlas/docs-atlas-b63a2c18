@@ -1,16 +1,16 @@
 ---
 title: "headroom mcp — MCP Server CLI Commands Reference"
 sidebarTitle: "mcp"
-description: "Reference for all headroom mcp subcommands: install, serve, uninstall, and status — plus the MCP server tool spec for headroom_compress, headroom_retrieve, and headroom_stats."
+description: "Reference for headroom mcp: install, serve, uninstall, and status commands, plus tool specs for headroom_retrieve, headroom_compress, and headroom_stats."
 ---
 
 The `headroom mcp` command group manages the Headroom Model Context Protocol (MCP) server. The MCP server exposes `headroom_retrieve`, `headroom_compress`, and `headroom_stats` as tools that Claude Code and other MCP-capable agents can call on demand — enabling CCR (Compress-Cache-Retrieve) even for subscription users without direct API access.
 
-```
-headroom mcp install     Register the MCP server with detected agents
-headroom mcp serve       Run the MCP server (called by the agent)
-headroom mcp uninstall   Remove from agent configuration
-headroom mcp status      Show installation and proxy status
+```bash
+headroom mcp install     # Register the MCP server with detected agents
+headroom mcp serve       # Run the MCP server (called by the agent)
+headroom mcp uninstall   # Remove from agent configuration
+headroom mcp status      # Show installation and proxy status
 ```
 
 <Note>

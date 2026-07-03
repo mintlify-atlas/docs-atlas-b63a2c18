@@ -1,7 +1,7 @@
 ---
-title: "How Headroom Compresses Your Agent's LLM Context"
+title: "How Headroom Compresses Your Agent's Context Window"
 sidebarTitle: "Compression"
-description: "A deep dive into Headroom's content-aware compression pipeline: auto-detection, SmartCrusher, CodeCompressor, Kompress-v2-base, and per-type savings."
+description: "A deep dive into Headroom's content-aware compression pipeline: auto-detection, SmartCrusher, CodeAwareCompressor, Kompress-v2-base, and per-type savings."
 ---
 
 Headroom automatically detects what kind of content you're sending and routes it to the right compressor — no configuration required. Every request flows through a two-stage pipeline: **CacheAligner** stabilizes prefixes so provider KV caches hit, and **ContentRouter** dispatches each message block to the optimal compressor based on its detected content type. The result is 40–95% fewer tokens with the same answers, and full reversibility via the CCR architecture.
@@ -25,7 +25,7 @@ Your messages (tool outputs · logs · RAG chunks · code · history)
 │  Detects content type per message block and routes to the   │
 │  best compressor:                                           │
 │    ├─ SmartCrusher      (JSON arrays)                       │
-│    ├─ CodeCompressor    (AST-aware source code)             │
+│    ├─ CodeAwareCompressor (AST-aware source code)           │
 │    ├─ LogCompressor     (shell / build / test logs)         │
 │    ├─ SearchCompressor  (grep / ripgrep results)            │
 │    └─ Kompress-v2-base  (plain text, HuggingFace ML)        │
@@ -42,14 +42,14 @@ The router detects content type by analyzing structure and patterns. Detection u
 | Content Type | Detection Signal | Compressor | Typical Savings |
 |---|---|---|---|
 | JSON arrays | Valid JSON with array elements | SmartCrusher | 70–90% |
-| Source code | Syntax patterns, indentation, keywords | CodeCompressor | 40–70% |
+| Source code | Syntax patterns, indentation, keywords | CodeAwareCompressor | 40–70% |
 | Build / test logs | Timestamps, log levels, pytest / npm markers | LogCompressor | 80–95% |
 | Search results | `file:line:content` format | SearchCompressor | 60–80% |
 | Plain text | Fallback for prose and unstructured output | Kompress-v2-base | 30–50% |
 | Images | Binary content | ML image router | 40–90% |
 
 <Note>
-  Code compression via `CodeCompressor` is opt-in and disabled by default.
+  Code compression via `CodeAwareCompressor` is opt-in and disabled by default.
   Enable it with the `[code]` extra: `pip install "headroom-ai[code]"`.
 </Note>
 
@@ -91,9 +91,9 @@ print(f"Transforms applied: {result.transforms_applied}")
 
 SmartCrusher never produces output that changes the JSON schema — no wrappers, no generated text, no metadata fields. The output is always a valid subset of the original array.
 
-## CodeCompressor — AST-Aware Source Code
+## CodeAwareCompressor — AST-Aware Source Code
 
-`CodeCompressor` uses **tree-sitter** to parse source code into an AST before compressing it, guaranteeing syntactically valid output.
+`CodeAwareCompressor` uses **tree-sitter** to parse source code into an AST before compressing it, guaranteeing syntactically valid output.
 
 ### Supported languages
 
@@ -102,7 +102,7 @@ SmartCrusher never produces output that changes the JSON schema — no wrappers,
     Python, JavaScript, TypeScript
   </Card>
   <Card title="Tier 2 — Structural support" icon="code">
-    Go, Rust, Java, C, C++
+    Go, Rust, Java, C, C++, Perl
   </Card>
 </CardGroup>
 

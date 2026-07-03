@@ -214,7 +214,7 @@ For FastAPI, Starlette, or any other ASGI application, add `CompressionMiddlewar
 
 ```python
 from fastapi import FastAPI
-from headroom.middleware import CompressionMiddleware
+from headroom.integrations.asgi import CompressionMiddleware
 
 app = FastAPI()
 app.add_middleware(CompressionMiddleware)

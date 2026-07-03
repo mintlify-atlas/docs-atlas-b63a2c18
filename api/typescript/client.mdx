@@ -48,6 +48,10 @@ const client = new HeadroomClient(options?: ExtendedClientOptions);
   Your upstream LLM provider key. Forwarded as `Authorization: Bearer` (OpenAI path) or `x-api-key` (Anthropic path) on passthrough requests.
 </ParamField>
 
+<ParamField body="defaultMode" type="HeadroomMode">
+  Default optimization mode for all requests through this client (e.g. `"optimize"`, `"audit"`, `"simulate"`).
+</ParamField>
+
 <ParamField body="config" type="HeadroomConfig">
   Fine-grained compression configuration object. See the config type reference below.
 </ParamField>
@@ -126,7 +130,7 @@ No-op for the HTTP client; included for API parity with future WebSocket clients
 
 ```typescript
 import OpenAI from "openai";
-import { withHeadroom } from "headroom-ai/adapters/openai";
+import { withHeadroom } from "headroom-ai/openai";
 
 const openai = withHeadroom(new OpenAI(), {
   baseUrl: "http://localhost:8787",
@@ -144,7 +148,7 @@ const response = await openai.chat.completions.create({
 
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
-import { withHeadroom } from "headroom-ai/adapters/anthropic";
+import { withHeadroom } from "headroom-ai/anthropic";
 
 const anthropic = withHeadroom(new Anthropic(), {
   baseUrl: "http://localhost:8787",
@@ -166,7 +170,7 @@ Integrates with the [Vercel AI SDK](https://sdk.vercel.ai) middleware pipeline. 
 ```typescript
 import { streamText } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { headroomMiddleware } from "headroom-ai/adapters/vercel-ai";
+import { headroomMiddleware } from "headroom-ai/vercel-ai";
 
 const result = await streamText({
   model: openai("gpt-4o"),

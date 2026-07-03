@@ -34,13 +34,13 @@ Headroom integrates with the Anthropic SDK through `withHeadroom()`, a single wr
 
 <Tabs>
   <Tab title="Python">
-    Use `HeadroomClient` to wrap your Anthropic instance, or use `AnthropicProvider` for provider-aware compression:
+    Use `HeadroomClient` with `AnthropicProvider` to wrap your Anthropic instance. `AnthropicProvider` enables accurate token counting against Claude's exact context limits:
 
     ```python
     from anthropic import Anthropic
-    from headroom import HeadroomClient
+    from headroom import HeadroomClient, AnthropicProvider
 
-    client = HeadroomClient(Anthropic())
+    client = HeadroomClient(Anthropic(), provider=AnthropicProvider())
 
     response = client.messages.create(
         model="claude-sonnet-4-5-20250929",
@@ -49,21 +49,16 @@ Headroom integrates with the Anthropic SDK through `withHeadroom()`, a single wr
     )
     ```
 
-    For direct compression with the Anthropic provider (enabling accurate token counting against Claude context limits), use `AnthropicProvider`:
+    You can also use `compress()` directly before passing messages to the Anthropic client:
 
     ```python
     from anthropic import Anthropic
     from headroom import compress
-    from headroom.providers import AnthropicProvider
 
     anthropic = Anthropic()
 
     messages = [{"role": "user", "content": large_content}]
-    compressed = compress(
-        messages,
-        model="claude-sonnet-4-5-20250929",
-        provider=AnthropicProvider(),
-    )
+    compressed = compress(messages, model="claude-sonnet-4-5-20250929")
 
     response = anthropic.messages.create(
         model="claude-sonnet-4-5-20250929",

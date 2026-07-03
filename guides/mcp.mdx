@@ -92,16 +92,17 @@ Retrieve original uncompressed content by hash. Retrieval checks the local store
 
 | Parameter | Required | Description |
 |---|---|---|
-| `hash` | ✅ | Hash key from a previous `headroom_compress` call |
-| `query` | ❌ | Search term to filter within the original and return only matching items |
+| `hash` | ✅ | Hash key from a previous `headroom_compress` call or from a proxy compression marker |
 
 **Returns:**
 
 | Field | Description |
 |---|---|
-| `original_content` | Full original content (when no `query` is provided) |
-| `results` | Filtered results matching `query` (when a query is provided) |
+| `original_content` | Full original content |
 | `source` | `"local"` or `"proxy"` — where the content was retrieved from |
+| `original_item_count` | Number of items in the original (for array content) |
+| `compressed_item_count` | Number of items in the compressed form |
+| `retrieval_count` | How many times this hash has been retrieved |
 
 **Example:**
 
@@ -126,13 +127,14 @@ Session compression statistics. Useful for Claude to self-report savings or for 
 |---|---|
 | `compressions` | Total number of compressions this session |
 | `retrievals` | Total number of retrievals this session |
-| `tokens_saved` | Total tokens saved |
+| `total_tokens_saved` | Total tokens saved |
 | `savings_percent` | Overall savings percentage |
 | `estimated_cost_saved_usd` | Estimated dollar savings |
 | `recent_events` | Last 10 compression/retrieval events |
-| `sub_agents` | Stats from sub-agent MCP instances |
+| `session_duration_seconds` | How long the MCP session has been running |
+| `sub_agents` | Stats from sub-agent MCP instances (when multiple agents share a session) |
 | `combined` | Main + sub-agent totals |
-| `proxy` | Request count, cache hits, cost saved (if proxy is running) |
+| `proxy` | Proxy stats (request count, cache hits, cost saved) if proxy is running |
 
 Sub-agent stats are aggregated via a shared stats file at `~/.headroom/session_stats.jsonl`.
 
