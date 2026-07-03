@@ -1,0 +1,159 @@
+---
+title: "Compress LiteLLM Traffic with HeadroomCallback"
+sidebarTitle: "LiteLLM"
+description: "Add Headroom compression to LiteLLM with one line: litellm.callbacks = [HeadroomCallback()]. Works with all 100+ LiteLLM-supported providers."
+---
+
+Headroom integrates with [LiteLLM](https://github.com/BerriAI/litellm) as a callback that compresses messages before they reach any provider. One line to enable, and it works with all 100+ LiteLLM-supported providers — OpenAI, Anthropic, Bedrock, Azure, Vertex AI, Groq, Mistral, Ollama, and more.
+
+## Installation
+
+```bash
+pip install headroom-ai litellm
+```
+
+## Quick start
+
+Set `litellm.callbacks` to a list containing a `HeadroomCallback` instance. Every subsequent `completion()` or `acompletion()` call will have its messages compressed automatically:
+
+```python
+import litellm
+from headroom.integrations.litellm_callback import HeadroomCallback
+
+litellm.callbacks = [HeadroomCallback()]
+
+# All calls now compressed automatically
+response = litellm.completion(model="gpt-4o", messages=[...])
+response = litellm.completion(model="bedrock/claude-sonnet", messages=[...])
+response = litellm.completion(model="azure/gpt-4o", messages=[...])
+```
+
+The callback compresses messages in LiteLLM's `async_pre_call_hook` before they reach the provider. The response format is unchanged.
+
+## How it works
+
+<Steps>
+  <Step title="You call litellm.completion()">
+    Normal LiteLLM call with your messages.
+  </Step>
+  <Step title="HeadroomCallback.async_pre_call_hook fires">
+    Headroom intercepts the call and runs its compression pipeline on the messages.
+  </Step>
+  <Step title="LiteLLM sends the compressed messages">
+    The smaller payload is forwarded to the selected provider.
+  </Step>
+  <Step title="Response comes back unchanged">
+    The response format is identical to what you would receive without Headroom.
+  </Step>
+</Steps>
+
+## Full LiteLLM completion example
+
+```python
+import litellm
+from headroom.integrations.litellm_callback import HeadroomCallback
+
+callback = HeadroomCallback(
+    min_tokens=500,      # Skip compression below this threshold
+    model_limit=200000,  # Target context window
+)
+litellm.callbacks = [callback]
+
+messages = [
+    {"role": "system", "content": "You are an SRE assistant."},
+    {"role": "user", "content": large_log_dump},
+]
+
+response = litellm.completion(
+    model="gpt-4o",
+    messages=messages,
+)
+
+print(response.choices[0].message.content)
+print(f"Total tokens saved so far: {callback.total_tokens_saved}")
+```
+
+## Direct compress() with LiteLLM
+
+You can also use `compress()` directly instead of the callback, for full control over when and how compression runs:
+
+```python
+import litellm
+from headroom import compress
+
+messages = [{"role": "user", "content": large_content}]
+compressed = compress(messages, model="bedrock/claude-sonnet")
+
+response = litellm.completion(
+    model="bedrock/claude-sonnet",
+    messages=compressed.messages,
+)
+
+print(f"Saved {compressed.tokens_saved} tokens")
+```
+
+## Provider routing with LiteLLM + Headroom
+
+One of LiteLLM's key features is routing the same call to different providers. Headroom compresses messages before routing, so savings apply regardless of which backend handles the request:
+
+```python
+import litellm
+from headroom.integrations.litellm_callback import HeadroomCallback
+
+litellm.callbacks = [HeadroomCallback()]
+
+# Route to different providers — Headroom compresses for all of them
+providers = [
+    "gpt-4o",
+    "anthropic/claude-sonnet-4-5-20250929",
+    "bedrock/amazon.titan-text-premier-v1:0",
+    "groq/llama-3.3-70b-versatile",
+]
+
+for model in providers:
+    response = litellm.completion(model=model, messages=messages)
+    print(f"{model}: {response.choices[0].message.content[:80]}")
+```
+
+## With LiteLLM Proxy
+
+If you run LiteLLM as a proxy server, add Headroom as ASGI middleware:
+
+```python
+from litellm.proxy.proxy_server import app
+from headroom.integrations.asgi import CompressionMiddleware
+
+app.add_middleware(CompressionMiddleware)
+```
+
+Or configure it via YAML without any code changes:
+
+```yaml
+# litellm_config.yaml
+litellm_settings:
+  callbacks: ["headroom.integrations.litellm_callback.HeadroomCallback"]
+```
+
+Response headers from the ASGI middleware include `x-headroom-compressed: true` and `x-headroom-tokens-saved: <n>` on every compressed request.
+
+## Cloud mode
+
+`HeadroomCallback` supports a cloud mode that routes compression through Headroom Cloud for managed CCR, TOIN learning, and org-wide analytics dashboards:
+
+```python
+import litellm
+from headroom.integrations.litellm_callback import HeadroomCallback
+
+# Cloud mode — compression runs on Headroom Cloud, not locally
+litellm.callbacks = [HeadroomCallback(api_key="hdr_xxx")]
+```
+
+You can also set the API key via the `HEADROOM_API_KEY` environment variable:
+
+```bash
+export HEADROOM_API_KEY=hdr_xxx
+```
+
+<Tip>
+  `HeadroomCallback` only fires on `completion` and `acompletion` call types. Embeddings, image generation, and other LiteLLM endpoints pass through unchanged.
+</Tip>

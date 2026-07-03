@@ -1,0 +1,214 @@
+---
+title: "headroom wrap — One-Command Agent Integration"
+sidebarTitle: "wrap"
+description: "Reference for headroom wrap and headroom unwrap: all supported tools, common flags, Claude-specific options, Copilot subscription mode, and the HEADROOM_CONTEXT_TOOL env var."
+---
+
+`headroom wrap <tool>` is the fastest way to connect any supported AI coding agent to Headroom. It starts the proxy as a background process, configures the agent to route through it, installs the MCP retrieve tool and context tools (rtk or lean-ctx), then launches the agent — all in a single command.
+
+```bash
+headroom wrap claude          # Start proxy + context tool + Claude Code
+headroom wrap codex           # Start proxy + OpenAI Codex CLI
+headroom wrap cursor          # Start proxy + print Cursor setup instructions
+headroom wrap copilot         # Start proxy + GitHub Copilot CLI
+headroom wrap aider           # Start proxy + aider
+headroom wrap goose           # Start proxy + Block Goose
+headroom wrap openhands       # Start proxy + OpenHands
+headroom wrap cline           # Start proxy + Cline (print instructions)
+headroom wrap continue        # Start proxy + Continue (print instructions)
+headroom wrap vibe            # Start proxy + Mistral Vibe CLI
+headroom wrap opencode        # Start proxy + OpenCode
+headroom wrap openclaw        # Install + configure OpenClaw plugin
+```
+
+`headroom unwrap <tool>` reverses the configuration — restoring original settings and optionally stopping the local proxy.
+
+---
+
+## Supported tools
+
+| Tool | Launch type | Durable unwrap |
+|---|---|---|
+| `claude` | Launches binary | ✓ |
+| `codex` | Launches binary | ✓ |
+| `cursor` | Prints config instructions | — |
+| `aider` | Launches binary | — |
+| `copilot` | Launches binary | ✓ |
+| `cline` | Prints config instructions | — |
+| `continue` | Prints config instructions | — |
+| `goose` | Launches binary | — |
+| `openhands` | Sets env variables | — |
+| `opencode` | Launches binary | ✓ |
+| `openclaw` | Plugin install | ✓ |
+| `vibe` | Launches binary | — |
+
+---
+
+## Common flags
+
+These flags are accepted by most or all `wrap` subcommands.
+
+<ParamField query="--port / -p" type="integer" default="8787">
+  Proxy port to start on (or connect to if `--no-proxy` is set).
+</ParamField>
+
+<ParamField query="--no-context-tool" type="flag">
+  Skip rtk / lean-ctx context-tool setup. Compression and MCP still work; the agent just won't have the token-optimized shell command wrapper.
+</ParamField>
+
+<ParamField query="--memory" type="flag">
+  Enable persistent cross-session memory in the proxy. Memories are automatically saved and retrieved across sessions.
+</ParamField>
+
+<ParamField query="--code-graph" type="flag">
+  Index the current project and enable the code-graph MCP server (tokensave). The agent can query call chains, definitions, and impact analysis without reading whole files.
+</ParamField>
+
+<ParamField query="--1m" type="flag">
+  Request the 1M context window for Claude Code (appends the `[1m]` model suffix). Only applies to entitled subscription accounts.
+</ParamField>
+
+<ParamField query="--tool-search" type="string">
+  Control Claude Code's on-demand tool loading (deferral). Accepts `true`, `false`, `auto`, or `auto:N` (0–100). Defaults to `true` (keep deferral on) to prevent MCP/system tool schemas from inflating the context window.
+</ParamField>
+
+<ParamField query="--prepare-only" type="flag">
+  Run setup steps (proxy start, MCP registration, tool install) without launching the agent binary. Useful for pre-warming in CI or container entrypoints.
+</ParamField>
+
+<ParamField query="--no-proxy" type="flag">
+  Skip starting a new proxy process — connect to one already running on `--port`.
+</ParamField>
+
+<ParamField query="--learn" type="flag">
+  Enable live traffic learning in the proxy (forwards `--learn` to `headroom proxy`).
+</ParamField>
+
+---
+
+## Claude-specific flags
+
+<ParamField query="--model" type="string">
+  Override the model passed to Claude Code via `ANTHROPIC_MODEL`. Useful for pinning a specific opus/sonnet variant.
+</ParamField>
+
+<ParamField query="--no-tokensave" type="flag">
+  Skip registration of the tokensave code-graph MCP compressor.
+</ParamField>
+
+<ParamField query="--serena" type="flag">
+  Force-register the Serena MCP compressor even though tokensave is now the primary. Use when tokensave is unavailable on your platform.
+</ParamField>
+
+<ParamField query="--no-serena" type="flag">
+  Never register the Serena backup compressor.
+</ParamField>
+
+```bash
+# Claude with 1M context and specific model
+headroom wrap claude --1m --model claude-opus-4-5
+
+# Claude with memory and traffic learning
+headroom wrap claude --memory --learn
+
+# Claude with code graph intelligence
+headroom wrap claude --code-graph
+
+# Pass extra arguments to claude after --
+headroom wrap claude -- --dangerously-skip-permissions
+```
+
+---
+
+## Copilot-specific flags
+
+<ParamField query="--subscription" type="flag">
+  Use GitHub Copilot's subscription (hosted) API rather than a BYOK provider. Triggers the OAuth device-code flow if no saved token exists.
+</ParamField>
+
+<ParamField query="--model" type="string">
+  Override the Copilot model (e.g. `claude-sonnet-4-5`, `gpt-4o`). Use `auto` to let Copilot pick.
+</ParamField>
+
+<ParamField query="--backend" type="string">
+  Force a specific BYOK backend: `anthropic`, `openai`, or `openrouter`.
+</ParamField>
+
+```bash
+# GitHub Copilot with subscription authentication
+headroom wrap copilot --subscription
+
+# GitHub Enterprise Server
+headroom wrap copilot --subscription --domain my-ghe.example.com
+
+# BYOK with Anthropic key
+headroom wrap copilot
+```
+
+---
+
+## headroom unwrap
+
+`headroom unwrap <tool>` removes Headroom's configuration from the agent and optionally stops the proxy.
+
+```bash
+headroom unwrap claude    # Remove routing config + stop proxy
+headroom unwrap copilot   # Remove Copilot routing + stop proxy
+headroom unwrap codex     # Restore codex config.toml + stop proxy
+headroom unwrap opencode  # Restore opencode config + stop proxy
+headroom unwrap openclaw  # Remove OpenClaw plugin
+```
+
+Tools with durable unwrap support (`claude`, `copilot`, `codex`, `opencode`, `openclaw`) restore the agent to its exact pre-wrap state using a snapshot taken at wrap time.
+
+### Unwrap flags (claude)
+
+<ParamField query="--port / -p" type="integer" default="8787">
+  Port of the proxy to stop.
+</ParamField>
+
+<ParamField query="--no-stop-proxy" type="flag">
+  Keep the proxy running after unwrapping.
+</ParamField>
+
+<ParamField query="--keep-mcp" type="flag">
+  Leave Headroom MCP registrations in place.
+</ParamField>
+
+<ParamField query="--keep-rtk" type="flag">
+  Leave rtk Claude hooks in place.
+</ParamField>
+
+---
+
+## HEADROOM_CONTEXT_TOOL
+
+Set this environment variable to choose between the two context tools:
+
+| Value | Description |
+|---|---|
+| `rtk` (default) | Rust Token Killer — prefix shell commands to filter/shrink their output (60–99 % savings) |
+| `lean-ctx` | Lean-ctx — alternative context optimizer |
+
+```bash
+# Use lean-ctx instead of rtk
+HEADROOM_CONTEXT_TOOL=lean-ctx headroom wrap claude
+```
+
+---
+
+## How wrap works
+
+1. Starts `headroom proxy` as a background process on the requested port (unless `--no-proxy`)
+2. Waits for the proxy to become healthy (timeout: 45 s by default, 90 s when ML extras are detected)
+3. Installs the rtk (or lean-ctx) context tool and registers hooks
+4. Registers the `headroom` MCP server with the agent for CCR retrieval
+5. Optionally registers the tokensave code-graph MCP
+6. Sets environment variables (`ANTHROPIC_BASE_URL`, etc.) to route traffic through the proxy
+7. Launches the agent binary (for launch-type tools) or prints setup instructions
+
+When the agent exits, the cleanup handler stops the proxy and restores any configuration files that were modified.
+
+<Note>
+  The proxy logs are written to `~/.headroom/logs/proxy-stdio.log` and `~/.headroom/logs/proxy.log`. If wrap fails to start, check those files for startup errors.
+</Note>

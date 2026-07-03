@@ -1,0 +1,334 @@
+---
+title: "compress() — One-Function Compression API"
+sidebarTitle: "compress()"
+description: "Compress LLM messages with a single function call. Works with any client — Anthropic, OpenAI, LiteLLM, or raw httpx. No proxy or config required."
+---
+
+The `compress()` function is the simplest entry point into Headroom. Pass a list of messages, get a compressed list back — no proxy, no configuration, no client wrapping needed. It works identically whether you're using the Anthropic SDK, OpenAI SDK, LiteLLM, or a raw HTTP client.
+
+```python
+from headroom import compress
+
+result = compress(messages, model="claude-sonnet-4-5-20250929")
+result.messages           # Compressed messages — same format as input
+result.tokens_saved       # How many tokens were removed
+result.compression_ratio  # e.g., 0.65 means 65% of tokens saved
+```
+
+---
+
+## Function Signature
+
+```python
+def compress(
+    messages: list[dict[str, Any]],
+    model: str = "claude-sonnet-4-5-20250929",
+    model_limit: int = 200000,
+    optimize: bool = True,
+    hooks: Any = None,
+    config: CompressConfig | None = None,
+    **kwargs: Any,
+) -> CompressResult: ...
+```
+
+### Parameters
+
+<ParamField path="messages" type="list[dict[str, Any]]" required>
+  List of messages in Anthropic or OpenAI format. Each message should have at minimum a `role` key and a `content` key.
+</ParamField>
+
+<ParamField path="model" type="str" default="claude-sonnet-4-5-20250929">
+  Model name used for token counting and determining the context window limit. Pass the exact model string you will use when calling the LLM (e.g. `"gpt-4o"`, `"claude-opus-4-20250514"`).
+</ParamField>
+
+<ParamField path="model_limit" type="int" default="200000">
+  Context window size in tokens for the target model. Headroom uses this to decide how aggressively to compress when the context is nearly full.
+</ParamField>
+
+<ParamField path="optimize" type="bool" default="true">
+  Set to `False` to disable compression entirely and return the original messages unchanged. Useful for A/B testing or gradual rollout.
+</ParamField>
+
+<ParamField path="hooks" type="CompressionHooks | None" default="None">
+  Optional [`CompressionHooks`](/api/python/transforms#compressionhooks) instance. Hooks let you inject pre-processing, per-message bias overrides, and post-compression observability callbacks.
+</ParamField>
+
+<ParamField path="config" type="CompressConfig | None" default="None">
+  Full compression configuration object. Individual `**kwargs` override fields inside this object; you can mix both.
+</ParamField>
+
+<ParamField path="**kwargs" type="Any">
+  Shorthand for any `CompressConfig` field — passed directly as keyword arguments. Valid keys: `compress_user_messages`, `compress_system_messages`, `protect_recent`, `protect_analysis_context`, `target_ratio`, `min_tokens_to_compress`, `kompress_model`, `savings_profile`.
+</ParamField>
+
+---
+
+## CompressConfig
+
+`CompressConfig` controls what gets compressed, how aggressively, and with which model variant. Pass it as `config=` or use the shorthand `**kwargs` form.
+
+```python
+from headroom import compress, CompressConfig
+
+cfg = CompressConfig(
+    compress_user_messages=True,
+    target_ratio=0.5,
+    protect_recent=0,
+)
+result = compress(messages, model="claude-opus-4-20250514", config=cfg)
+```
+
+<ParamField path="compress_user_messages" type="bool" default="false">
+  Compress user messages as well as tool outputs. Default is `False` because coding agents need to see exact user instructions. Set `True` for document pipelines, RAG, or when user messages contain large tool outputs.
+</ParamField>
+
+<ParamField path="compress_system_messages" type="bool" default="true">
+  Compress system messages. Set `False` to preserve system prompts exactly, for example in voice agents where tool definitions must not be altered.
+</ParamField>
+
+<ParamField path="protect_recent" type="int" default="4">
+  Number of trailing messages to leave uncompressed. These are the active conversation turns. Set `0` to compress the entire context.
+</ParamField>
+
+<ParamField path="protect_analysis_context" type="bool" default="true">
+  Detect `analyze` / `review` intent in the conversation and protect code blocks from compression when found.
+</ParamField>
+
+<ParamField path="target_ratio" type="float | None" default="None">
+  Keep ratio for the text (Kompress) compressor. `None` lets the model decide (~15% kept, aggressive). `0.5` keeps 50% (safe for documents). Only affects text compression — SmartCrusher (JSON) uses its own statistical logic.
+</ParamField>
+
+<ParamField path="min_tokens_to_compress" type="int" default="250">
+  Minimum token count for a message to be eligible for compression. Messages shorter than this threshold are left untouched.
+</ParamField>
+
+<ParamField path="kompress_model" type="str | None" default="None">
+  HuggingFace model ID for the Kompress text compressor. `None` uses the default (`chopratejas/kompress-v2-base`). Set to `"disabled"` to skip ML text compression entirely — only SmartCrusher and CacheAligner will run.
+</ParamField>
+
+<ParamField path="savings_profile" type="str | None" default="None">
+  Named high-savings preset. For example, `"agent-90"` applies settings tuned for Codex/Claude/Cursor coding agents targeting 90% token reduction.
+</ParamField>
+
+---
+
+## CompressResult
+
+`compress()` always returns a `CompressResult` — it never raises on failure, instead reverting to the original messages and logging a warning.
+
+<ResponseField name="messages" type="list[dict[str, Any]]">
+  The compressed messages in the same format as the input. Drop-in replacement for the original `messages` list.
+</ResponseField>
+
+<ResponseField name="tokens_before" type="int">
+  Token count before compression. `0` if compression was skipped (empty input, `optimize=False`, or a failure that triggered the safety guard).
+</ResponseField>
+
+<ResponseField name="tokens_after" type="int">
+  Token count after compression.
+</ResponseField>
+
+<ResponseField name="tokens_saved" type="int">
+  Tokens removed: `tokens_before - tokens_after`.
+</ResponseField>
+
+<ResponseField name="compression_ratio" type="float">
+  Fraction of tokens saved. `0.0` means nothing was saved; `0.65` means 65% of tokens were removed.
+</ResponseField>
+
+<ResponseField name="transforms_applied" type="list[str]">
+  Internal names of every transform that ran, e.g. `["router:tool_result:json", "smart_crusher", "cache_aligner"]`. Useful for debugging. When the inflation guard fires, the list contains `["inflation_guard:reverted"]`.
+</ResponseField>
+
+<Note>
+  If compression would inflate the token count (a rare edge case), Headroom automatically reverts to the original messages. The returned `CompressResult` will have `tokens_saved=0` and `transforms_applied=["inflation_guard:reverted"]`.
+</Note>
+
+---
+
+## Usage Examples
+
+<CodeGroup>
+
+```python Anthropic SDK
+from anthropic import Anthropic
+from headroom import compress
+
+client = Anthropic()
+messages = [{"role": "user", "content": huge_tool_output}]
+
+compressed = compress(messages, model="claude-sonnet-4-5-20250929")
+
+response = client.messages.create(
+    model="claude-sonnet-4-5-20250929",
+    max_tokens=1024,
+    messages=compressed.messages,   # <-- drop in compressed messages
+)
+
+print(f"Saved {compressed.tokens_saved} tokens ({compressed.compression_ratio:.0%})")
+```
+
+```python OpenAI SDK
+from openai import OpenAI
+from headroom import compress
+
+client = OpenAI()
+messages = [
+    {"role": "user", "content": "analyze this"},
+    {"role": "tool", "content": big_data},
+]
+
+compressed = compress(messages, model="gpt-4o")
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=compressed.messages,
+)
+```
+
+```python LiteLLM
+import litellm
+from headroom import compress
+
+messages = [...]
+compressed = compress(messages, model="bedrock/claude-sonnet")
+
+response = litellm.completion(
+    model="bedrock/claude-sonnet",
+    messages=compressed.messages,
+)
+```
+
+```python httpx (raw)
+import httpx
+from headroom import compress
+
+compressed = compress(messages, model="claude-sonnet-4-5-20250929")
+
+httpx.post(
+    "https://api.anthropic.com/v1/messages",
+    headers={"x-api-key": "...", "anthropic-version": "2023-06-01"},
+    json={
+        "model": "claude-sonnet-4-5-20250929",
+        "max_tokens": 1024,
+        "messages": compressed.messages,
+    },
+)
+```
+
+</CodeGroup>
+
+---
+
+## Document and Financial Pipelines
+
+For documents, RAG pipelines, or contexts where user messages contain large data payloads, enable user-message compression and adjust `target_ratio`:
+
+```python
+from headroom import compress
+
+result = compress(
+    messages,
+    model="claude-opus-4-20250514",
+    compress_user_messages=True,   # user messages contain the document
+    target_ratio=0.5,              # keep 50% of text (conservative)
+    protect_recent=0,              # compress everything, no active turns
+)
+```
+
+---
+
+## Using Hooks for Observability
+
+Pass a [`CompressionHooks`](/api/python/transforms#compressionhooks) subclass to instrument compression events:
+
+```python
+from headroom import compress
+from headroom.hooks import CompressionHooks, CompressEvent, CompressContext
+
+class LoggingHooks(CompressionHooks):
+    def post_compress(self, event: CompressEvent) -> None:
+        print(
+            f"[{event.model}] {event.tokens_before} → {event.tokens_after} "
+            f"({event.compression_ratio:.0%} saved)"
+        )
+
+result = compress(messages, model="gpt-4o", hooks=LoggingHooks())
+```
+
+---
+
+## compress_spreadsheet()
+
+`compress_spreadsheet()` compresses `.xlsx` and `.xls` files by rendering each sheet as CSV text and running the full compression pipeline per sheet. Requires the `spreadsheet` extra: `pip install headroom-ai[spreadsheet]`.
+
+```python
+def compress_spreadsheet(
+    path: str,
+    model: str = "claude-sonnet-4-5-20250929",
+    model_limit: int = 200000,
+    **kwargs: Any,
+) -> CompressResult: ...
+```
+
+### Parameters
+
+<ParamField path="path" type="str" required>
+  Filesystem path to an `.xlsx` or `.xls` file.
+</ParamField>
+
+<ParamField path="model" type="str" default="claude-sonnet-4-5-20250929">
+  Model name for token counting and context limit determination.
+</ParamField>
+
+<ParamField path="model_limit" type="int" default="200000">
+  Model context window size in tokens.
+</ParamField>
+
+<ParamField path="**kwargs" type="Any">
+  Forwarded to `compress()`. For example, pass `target_ratio=0.3` to compress each sheet to 30% of its original size.
+</ParamField>
+
+### Example
+
+```python
+from headroom import compress_spreadsheet
+
+result = compress_spreadsheet(
+    "quarterly_report.xlsx",
+    model="gpt-4o",
+    target_ratio=0.4,
+)
+
+# result.messages is a list of {"role": "user", "content": <sheet CSV>}
+# Send to your LLM as-is
+print(f"Sheets compressed: {len(result.messages)}")
+print(f"Tokens saved: {result.tokens_saved}")
+```
+
+<Note>
+  Each sheet becomes its own `user` message. The tabular compressor (CSV → SmartCrusher) runs per sheet, applying lossless column/row compaction first, falling back to lossy row-drop with CCR markers when lossless savings are insufficient.
+</Note>
+
+---
+
+## Handling the Result
+
+`compress()` is safe to call unconditionally — it never throws on compression failure:
+
+```python
+from headroom import compress
+
+result = compress(messages, model="gpt-4o")
+
+# Always use result.messages — safe even on failure
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=result.messages,
+)
+
+# Optional: log savings
+if result.tokens_saved > 0:
+    print(f"Saved {result.tokens_saved} tokens ({result.compression_ratio:.0%})")
+    print(f"Transforms: {result.transforms_applied}")
+```

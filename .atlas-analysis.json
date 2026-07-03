@@ -1,0 +1,163 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Headroom",
+  "projectDescription": "A context compression layer for AI agents that reduces LLM token usage by 60–95% through a library, proxy server, MCP server, and agent-wrap CLI — without sacrificing accuracy.",
+  "theme": "luma",
+  "primaryColor": "#6366F1",
+  "lightColor": "#818CF8",
+  "darkColor": "#4338CA",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Modes of Use",
+            "pages": [
+              "guides/library",
+              "guides/proxy",
+              "guides/agent-wrap",
+              "guides/mcp"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-compression-works",
+              "concepts/ccr",
+              "concepts/cache-optimization",
+              "concepts/architecture"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/memory",
+              "features/failure-learning",
+              "features/output-token-reduction",
+              "features/shared-context"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/openai-sdk",
+              "integrations/anthropic-sdk",
+              "integrations/langchain",
+              "integrations/vercel-ai-sdk",
+              "integrations/agno",
+              "integrations/litellm"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/configuration",
+              "operations/benchmarks",
+              "operations/savings-analytics",
+              "operations/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Python SDK",
+            "pages": [
+              "api/python/compress",
+              "api/python/client",
+              "api/python/config",
+              "api/python/transforms"
+            ]
+          },
+          {
+            "group": "TypeScript SDK",
+            "pages": [
+              "api/typescript/compress",
+              "api/typescript/client"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "api/cli/proxy",
+              "api/cli/wrap",
+              "api/cli/mcp",
+              "api/cli/learn",
+              "api/cli/other-commands"
+            ]
+          },
+          {
+            "group": "Proxy HTTP API",
+            "pages": [
+              "api/proxy/endpoints"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "60–95% token reduction on tool outputs, logs, RAG chunks, files, and conversation history",
+    "Library mode: compress(messages) in Python or TypeScript with zero infrastructure",
+    "Proxy mode: zero-code-change HTTP proxy for any LLM client",
+    "Agent wrap: one-command integration with Claude Code, Codex, Cursor, Aider, Cline, and more",
+    "MCP server: headroom_compress, headroom_retrieve, headroom_stats tools for any MCP host",
+    "CCR (Compress-Cache-Retrieve): fully reversible compression — originals retrievable on demand",
+    "ContentRouter: auto-detects content type (JSON, code, logs, text, images) and applies best compressor",
+    "SmartCrusher: statistical JSON array compression with anomaly preservation",
+    "CodeCompressor: AST-aware compression for Python, JS/TS, Go, Rust, Java, C/C++",
+    "Kompress-v2-base: HuggingFace model trained on agentic traces for prose compression",
+    "CacheAligner: stabilizes prefixes to maximize provider KV cache hit rates",
+    "Cross-agent shared memory: persistent, hierarchical memory across Claude, Codex, Gemini",
+    "headroom learn: mines failed sessions and writes project-level corrections to CLAUDE.md",
+    "Output token reduction: verbosity steering and effort routing cut model write-back cost",
+    "Local-first: data never leaves your machine"
+  ],
+  "publicApiSurface": [
+    "compress(messages, model, config) -> CompressResult",
+    "compress_spreadsheet(...) -> CompressResult",
+    "HeadroomClient(original_client, provider, default_mode, ...)",
+    "HeadroomClient.chat.completions.create(...)",
+    "HeadroomClient.chat.completions.simulate(...)",
+    "HeadroomClient.get_stats() -> dict",
+    "HeadroomClient.validate_setup() -> dict",
+    "with_memory(client, user_id) -> wrapped client",
+    "Memory(backend) — async .save() / .search()",
+    "SharedContext.put() / .get()",
+    "SmartCrusher, CacheAligner, TransformPipeline",
+    "withHeadroom(new OpenAI()) — TypeScript SDK wrapper",
+    "withHeadroom(new Anthropic()) — TypeScript SDK wrapper",
+    "headroomMiddleware() — Vercel AI SDK middleware",
+    "HeadroomChatModel(your_llm) — LangChain wrapper",
+    "HeadroomAgnoModel(your_model) — Agno wrapper",
+    "HeadroomCallback() — LiteLLM callback",
+    "CompressionMiddleware — ASGI middleware",
+    "headroom proxy [--port] [--mode] [--backend] [...]",
+    "headroom wrap claude|codex|cursor|aider|copilot|cline|continue|goose|openhands|opencode|openclaw|vibe",
+    "headroom unwrap <tool>",
+    "headroom mcp install / serve",
+    "headroom learn [--apply] [--target] [--verbosity]",
+    "headroom doctor",
+    "headroom perf",
+    "headroom dashboard",
+    "headroom savings",
+    "headroom output-savings",
+    "headroom update",
+    "headroom init / install apply",
+    "headroom copilot-auth login",
+    "MCP tool: headroom_compress(content) -> compressed + hash",
+    "MCP tool: headroom_retrieve(hash) -> original content",
+    "MCP tool: headroom_stats() -> session statistics"
+  ]
+}

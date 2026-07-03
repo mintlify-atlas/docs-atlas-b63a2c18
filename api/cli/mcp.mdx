@@ -1,0 +1,168 @@
+---
+title: "headroom mcp — MCP Server CLI Commands Reference"
+sidebarTitle: "mcp"
+description: "Reference for all headroom mcp subcommands: install, serve, uninstall, and status — plus the MCP server tool spec for headroom_compress, headroom_retrieve, and headroom_stats."
+---
+
+The `headroom mcp` command group manages the Headroom Model Context Protocol (MCP) server. The MCP server exposes `headroom_retrieve`, `headroom_compress`, and `headroom_stats` as tools that Claude Code and other MCP-capable agents can call on demand — enabling CCR (Compress-Cache-Retrieve) even for subscription users without direct API access.
+
+```
+headroom mcp install     Register the MCP server with detected agents
+headroom mcp serve       Run the MCP server (called by the agent)
+headroom mcp uninstall   Remove from agent configuration
+headroom mcp status      Show installation and proxy status
+```
+
+<Note>
+  The MCP server requires `pip install 'headroom-ai[mcp]'`. The proxy must be running independently for the retrieve and stats tools to function. Start it with `headroom proxy`.
+</Note>
+
+---
+
+## How it works
+
+1. `ANTHROPIC_BASE_URL` routes all requests through the Headroom proxy
+2. The proxy compresses large tool outputs (file listings, search results, code files)
+3. Claude sees compressed summaries with `[Retrieve more: hash=…]` markers
+4. When Claude needs the full content, it calls `headroom_retrieve`
+5. The MCP server fetches the original content from the proxy's CCR store
+
+<Note>
+  MCP clients display tools as `mcp__<server>__<tool>`. Because the server is named `headroom` and the tools are named `headroom_retrieve` / `headroom_compress` / etc., Claude Code shows them as `mcp__headroom__headroom_retrieve`. The double `headroom` is normal MCP namespacing, not a bug.
+</Note>
+
+---
+
+## headroom mcp install
+
+Register the Headroom MCP server with every detected coding agent. Currently supports Claude Code; Cursor, Codex, Continue, and others are added in subsequent releases.
+
+```bash
+headroom mcp install
+headroom mcp install --agent claude
+headroom mcp install --proxy-url http://localhost:9000
+headroom mcp install --force
+```
+
+<ParamField query="--proxy-url" type="string" default="http://127.0.0.1:8787">
+  URL of the running Headroom proxy that the MCP server will connect to for retrieve and stats calls.
+</ParamField>
+
+<ParamField query="--agent" type="string">
+  Restrict installation to a specific agent name (e.g. `claude`). Repeat the flag to target multiple agents. Defaults to every detected agent.
+</ParamField>
+
+<ParamField query="--force" type="flag">
+  Overwrite an existing Headroom MCP entry even when the spec has changed. Without `--force`, a mismatched entry is reported but left in place.
+</ParamField>
+
+After installation, restart any agent that was already running so it picks up the new MCP server configuration.
+
+---
+
+## headroom mcp serve
+
+Start the MCP server with stdio transport. This command is typically invoked automatically by the agent via its MCP configuration — you do not need to run it manually during normal use.
+
+```bash
+# Manual testing / debugging
+headroom mcp serve --debug
+
+# Custom proxy URL
+headroom mcp serve --proxy-url http://localhost:9000
+```
+
+<ParamField query="--proxy-url" type="string">
+  URL of the Headroom proxy to connect to. Defaults to `HEADROOM_PROXY_URL` env var or `http://127.0.0.1:8787`.
+</ParamField>
+
+<ParamField query="--debug" type="flag">
+  Enable verbose debug logging. Useful when diagnosing MCP tool call failures.
+</ParamField>
+
+---
+
+## headroom mcp uninstall
+
+Remove the Headroom MCP server from Claude Code's configuration. Cleans up both the Claude CLI registry (`claude mcp remove headroom`) and `~/.claude/mcp.json`. Other MCP servers are preserved.
+
+```bash
+headroom mcp uninstall
+```
+
+Also removes `codebase-memory-mcp` if it was registered by `--code-graph`.
+
+---
+
+## headroom mcp status
+
+Show the current MCP installation and proxy connectivity status.
+
+```bash
+headroom mcp status
+```
+
+Output includes:
+- MCP SDK installation status
+- Whether the `headroom` server is registered in Claude Code's config
+- The configured proxy URL
+- Whether the proxy is reachable at that URL
+
+---
+
+## MCP tool reference
+
+The MCP server exposes these tools to the agent:
+
+### `headroom_retrieve`
+
+Retrieve the full original content that was compressed into a CCR hash. Claude calls this automatically when it encounters a `[Retrieve more: hash=…]` marker in a tool result.
+
+**Input:**
+```json
+{
+  "hash": "abc123def456",
+  "query": "optional semantic search query to return the most relevant section"
+}
+```
+
+**Returns:** The original uncompressed content, optionally filtered to the most relevant section if `query` is provided.
+
+### `headroom_compress`
+
+Manually compress a message array on demand. Useful when the agent wants to compact its context before a large operation.
+
+**Input:**
+```json
+{
+  "messages": [...],
+  "model": "claude-opus-4-5"
+}
+```
+
+**Returns:** Compressed messages with token savings statistics.
+
+### `headroom_stats`
+
+Retrieve current proxy statistics: total requests, tokens saved, compression ratio, and per-model breakdowns.
+
+**Input:** *(none)*
+
+**Returns:** The same payload as `GET /stats` on the proxy.
+
+---
+
+## Quick start
+
+```bash
+# 1. Install the MCP server
+headroom mcp install
+
+# 2. Start the proxy in a separate terminal
+headroom proxy
+
+# 3. Launch Claude Code with the proxy
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
+```
+
+Or use `headroom wrap claude` to handle all three steps automatically.

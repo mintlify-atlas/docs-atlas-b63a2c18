@@ -1,0 +1,237 @@
+---
+title: "Headroom Proxy HTTP API Endpoints Reference"
+sidebarTitle: "Endpoints"
+description: "Full reference for the Headroom proxy HTTP API: compression endpoints, stats, health, admin routes, and CCR retrieval endpoints."
+---
+
+The Headroom proxy exposes an HTTP API on `http://127.0.0.1:8787` by default. Most clients interact with it through the provider-compatible endpoints (`/v1/chat/completions`, `/v1/messages`) by setting environment variables. Additional endpoints provide stats, health checks, and admin controls.
+
+## Provider endpoints
+
+These endpoints are drop-in replacements for the upstream provider APIs. Set the base URL in your client to route through Headroom.
+
+### POST /v1/chat/completions
+
+OpenAI-compatible endpoint. Accepts the same request body as `POST https://api.openai.com/v1/chat/completions`, compresses the messages, forwards to the upstream provider, and returns the response unchanged.
+
+```bash
+# Point any OpenAI-compatible client at the proxy
+export OPENAI_BASE_URL=http://localhost:8787/v1
+```
+
+**Headers:**
+- `Authorization: Bearer <your-api-key>` — forwarded to the upstream provider
+- `Content-Type: application/json`
+
+### POST /v1/messages
+
+Anthropic-compatible endpoint. Accepts the same request body as `POST https://api.anthropic.com/v1/messages`.
+
+```bash
+# Point Claude Code at the proxy
+export ANTHROPIC_BASE_URL=http://localhost:8787
+```
+
+**Headers:**
+- `x-api-key: <your-anthropic-key>` — forwarded to Anthropic
+- `anthropic-version: 2023-06-01`
+- `Content-Type: application/json`
+
+### POST /v1/compress
+
+Direct compression endpoint (loopback only). Compresses a messages array without forwarding to any provider. Returns the compressed messages and savings metadata.
+
+```bash
+curl -X POST http://localhost:8787/v1/compress \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [...], "model": "gpt-4o"}'
+```
+
+### POST /v1/retrieve
+
+Direct CCR retrieval endpoint (loopback only). Retrieves a previously compressed and cached original by hash.
+
+```bash
+curl -X POST http://localhost:8787/v1/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{"hash": "abc123"}'
+```
+
+---
+
+## Stats and observability
+
+### GET /stats
+
+Returns session statistics as JSON. Available to any client (not loopback-restricted).
+
+```bash
+curl http://localhost:8787/stats
+```
+
+**Response fields:**
+
+<ResponseField name="requests_total" type="integer">
+  Total number of requests processed since the proxy started.
+</ResponseField>
+
+<ResponseField name="tokens_saved_total" type="integer">
+  Total input tokens saved across all requests.
+</ResponseField>
+
+<ResponseField name="tokens_before_total" type="integer">
+  Total input tokens before compression.
+</ResponseField>
+
+<ResponseField name="tokens_after_total" type="integer">
+  Total input tokens after compression.
+</ResponseField>
+
+<ResponseField name="compression_ratio" type="float">
+  Overall compression ratio (0.0–1.0, where 0.9 = 90% reduction).
+</ResponseField>
+
+<ResponseField name="cost_saved_usd" type="float">
+  Estimated dollar savings based on LiteLLM pricing. Requires Python 3.13 or earlier.
+</ResponseField>
+
+<ResponseField name="uptime_seconds" type="float">
+  Proxy uptime in seconds.
+</ResponseField>
+
+<ResponseField name="session_start" type="string">
+  ISO 8601 timestamp when this proxy session started.
+</ResponseField>
+
+Pass `?cached=true` to return the last cached stats payload without recomputing (faster, slightly stale):
+
+```bash
+curl "http://localhost:8787/stats?cached=true"
+```
+
+### GET /stats-history
+
+Returns a time series of stats snapshots for trend analysis.
+
+```bash
+curl "http://localhost:8787/stats-history?limit=100"
+```
+
+<ParamField query="limit" type="integer" default="60">
+  Maximum number of historical data points to return.
+</ParamField>
+
+### GET /metrics
+
+Returns Prometheus-compatible metrics.
+
+```bash
+curl http://localhost:8787/metrics
+```
+
+### GET /transformations/feed
+
+Returns the most recent transformation events (compressed requests) for the live dashboard feed. Loopback only.
+
+```bash
+curl http://localhost:8787/transformations/feed?limit=20
+```
+
+---
+
+## Health checks
+
+### GET /health
+
+General health check. Returns `200 OK` with a JSON body when the proxy is running and its upstream connection is healthy.
+
+```bash
+curl http://localhost:8787/health
+# {"status": "ok", "version": "0.28.0", "upstream": "healthy"}
+```
+
+### GET /livez
+
+Kubernetes liveness probe. Returns `200 OK` as long as the process is alive.
+
+### GET /readyz
+
+Kubernetes readiness probe. Returns `200 OK` once the proxy has warmed up and is ready to serve traffic.
+
+---
+
+## Admin endpoints
+
+Admin endpoints are restricted to loopback connections (`127.0.0.1` or `localhost`). They cannot be called from remote hosts.
+
+### POST /admin/runtime-env
+
+Hot-syncs environment variable overrides to the running proxy without a restart. Used by `headroom wrap` to propagate settings like `HEADROOM_OUTPUT_SHAPER` to an already-running proxy.
+
+```bash
+curl -X POST http://localhost:8787/admin/runtime-env \
+  -H "Content-Type: application/json" \
+  -d '{"HEADROOM_OUTPUT_SHAPER": "1"}'
+```
+
+<Note>
+On a shared proxy, these overrides are global — the last explicit setting wins.
+</Note>
+
+### POST /stats/reset
+
+Resets all session statistics counters to zero. Loopback only.
+
+```bash
+curl -X POST http://localhost:8787/stats/reset
+```
+
+### POST /cache/clear
+
+Clears the semantic cache. Loopback only.
+
+```bash
+curl -X POST http://localhost:8787/cache/clear
+```
+
+### GET /admin/upstream
+
+Returns the currently configured upstream provider URL and backend. Loopback only.
+
+```bash
+curl http://localhost:8787/admin/upstream
+```
+
+---
+
+## CCR retrieval endpoints
+
+### GET /v1/retrieve/{hash_key}
+
+Retrieves a cached original by hash key. Loopback only.
+
+```bash
+curl http://localhost:8787/v1/retrieve/abc123def456
+```
+
+### GET /v1/retrieve/stats
+
+Returns statistics about the CCR cache (size, hit rate, evictions). Loopback only.
+
+### POST /v1/retrieve/tool_call
+
+Handles an `headroom_retrieve` tool call from an LLM response. Called internally by the proxy's response handler; you do not need to call this directly.
+
+---
+
+## Dashboard
+
+### GET /dashboard
+
+Returns the HTML live savings dashboard. Open in a browser while the proxy is running.
+
+```bash
+open http://localhost:8787/dashboard
+# or
+headroom dashboard
+```

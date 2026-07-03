@@ -1,0 +1,217 @@
+---
+title: "Add Headroom to Anthropic SDK Applications"
+sidebarTitle: "Anthropic SDK"
+description: "Wrap your Anthropic client with withHeadroom() to automatically compress messages before every messages.create() call, in Python or TypeScript."
+---
+
+Headroom integrates with the Anthropic SDK through `withHeadroom()`, a single wrapper that intercepts `messages.create()` calls and compresses conversation history before they reach Claude. The adapter handles full Anthropic message format including content blocks, tool use, and tool results — the conversion is lossless, so your request and response behave identically to an unwrapped client.
+
+## Installation
+
+<Tabs>
+  <Tab title="Python">
+    ```bash
+    pip install "headroom-ai"
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```bash
+    npm install headroom-ai @anthropic-ai/sdk
+    ```
+
+    <Note>
+      The TypeScript SDK sends messages to a local Headroom proxy for compression. Start the proxy before using the SDK:
+
+      ```bash
+      pip install "headroom-ai[proxy]"
+      headroom proxy
+      ```
+    </Note>
+  </Tab>
+</Tabs>
+
+## Quick start
+
+<Tabs>
+  <Tab title="Python">
+    Use `HeadroomClient` to wrap your Anthropic instance, or use `AnthropicProvider` for provider-aware compression:
+
+    ```python
+    from anthropic import Anthropic
+    from headroom import HeadroomClient
+
+    client = HeadroomClient(Anthropic())
+
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        messages=long_conversation,
+        max_tokens=1024,
+    )
+    ```
+
+    For direct compression with the Anthropic provider (enabling accurate token counting against Claude context limits), use `AnthropicProvider`:
+
+    ```python
+    from anthropic import Anthropic
+    from headroom import compress
+    from headroom.providers import AnthropicProvider
+
+    anthropic = Anthropic()
+
+    messages = [{"role": "user", "content": large_content}]
+    compressed = compress(
+        messages,
+        model="claude-sonnet-4-5-20250929",
+        provider=AnthropicProvider(),
+    )
+
+    response = anthropic.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        messages=compressed.messages,
+        max_tokens=1024,
+    )
+
+    print(f"Saved {compressed.tokens_saved} tokens")
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    Import `withHeadroom` from the `headroom-ai/anthropic` subpath and pass your `Anthropic` instance:
+
+    ```typescript
+    import { withHeadroom } from 'headroom-ai/anthropic';
+    import Anthropic from '@anthropic-ai/sdk';
+
+    const client = withHeadroom(new Anthropic());
+
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-5-20250929',
+      messages: longConversation,
+      max_tokens: 1024,
+    });
+    ```
+
+    Every call to `client.messages.create()` compresses messages first. The response format is identical to the unwrapped client.
+  </Tab>
+</Tabs>
+
+## How it works
+
+`withHeadroom()` returns a proxy around your Anthropic client that intercepts `messages.create()`:
+
+<Steps>
+  <Step title="Convert to OpenAI format">
+    Converts Anthropic-format messages to OpenAI format (the compression engine's native format).
+  </Step>
+  <Step title="Compress">
+    Runs the Headroom pipeline against the messages and target model's context limit.
+  </Step>
+  <Step title="Convert back and forward">
+    Converts the compressed messages back to Anthropic format, then forwards the full request to Anthropic as normal.
+  </Step>
+</Steps>
+
+### Message format conversion
+
+The adapter handles the full Anthropic message format including content blocks:
+
+| Anthropic format | OpenAI format |
+|---|---|
+| `{ type: "text", text: "..." }` | `{ role: "user", content: "..." }` |
+| `{ type: "tool_use", id, name, input }` | `{ tool_calls: [{ id, function: { name, arguments } }] }` |
+| `{ type: "tool_result", tool_use_id, content }` | `{ role: "tool", tool_call_id, content }` |
+
+## Options
+
+Pass compression options as the second argument:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/anthropic';
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = withHeadroom(new Anthropic(), {
+  model: 'claude-sonnet-4-5-20250929',
+  baseUrl: 'http://localhost:8787',
+});
+```
+
+## Streaming
+
+Compression happens before the request is sent, so streaming responses work exactly as normal:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/anthropic';
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = withHeadroom(new Anthropic());
+
+const stream = await client.messages.create({
+  model: 'claude-sonnet-4-5-20250929',
+  messages: longConversation,
+  max_tokens: 1024,
+  stream: true,
+});
+```
+
+## Tool use
+
+Tool results are where compression has the biggest impact. Large JSON payloads from tool calls are compressed automatically:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/anthropic';
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = withHeadroom(new Anthropic());
+
+const response = await client.messages.create({
+  model: 'claude-sonnet-4-5-20250929',
+  max_tokens: 1024,
+  messages: [
+    { role: 'user', content: 'What went wrong?' },
+    {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_1',
+          name: 'get_logs',
+          input: { service: 'api' },
+        },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: hugeLogOutput, // Compressed automatically
+        },
+      ],
+    },
+  ],
+  tools: [
+    {
+      name: 'get_logs',
+      description: 'Get service logs',
+      input_schema: { type: 'object', properties: {} },
+    },
+  ],
+});
+```
+
+## Cache optimization
+
+Headroom's `CacheAligner` stabilizes prompt prefixes so Anthropic's prompt-caching KV cache actually hits on repeated calls. When compression rearranges message content, `CacheAligner` ensures the stable prefix (system prompt, earlier turns) is positioned consistently to maximize cache hit rate.
+
+<Tip>
+  The `AnthropicProvider` used by Headroom knows Claude's exact context limits per model: 200 000 tokens for claude-3-5-sonnet and above, 100 000 for claude-3-haiku. This means compression only activates when you actually need it.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Supported models" icon="microchip">
+    `claude-opus-4`, `claude-sonnet-4-5-20250929`, `claude-haiku-3-5`, and all claude-3 variants. Context limits are auto-detected per model ID.
+  </Card>
+  <Card title="Prompt caching" icon="database">
+    `CacheAligner` keeps your stable prefixes pinned so Anthropic's prompt cache keeps hitting even after Headroom compresses later turns.
+  </Card>
+</CardGroup>

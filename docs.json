@@ -1,72 +1,122 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Headroom",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#6366F1",
+    "light": "#818CF8",
+    "dark": "#4338CA"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/headroomlabs-ai/headroom"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/headroomlabs-ai/headroom"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Modes of Use",
+            "pages": [
+              "guides/library",
+              "guides/proxy",
+              "guides/agent-wrap",
+              "guides/mcp"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-compression-works",
+              "concepts/ccr",
+              "concepts/cache-optimization",
+              "concepts/architecture"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/memory",
+              "features/failure-learning",
+              "features/output-token-reduction",
+              "features/shared-context"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/openai-sdk",
+              "integrations/anthropic-sdk",
+              "integrations/langchain",
+              "integrations/vercel-ai-sdk",
+              "integrations/agno",
+              "integrations/litellm"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/configuration",
+              "operations/benchmarks",
+              "operations/savings-analytics",
+              "operations/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Python SDK",
+            "pages": [
+              "api/python/compress",
+              "api/python/client",
+              "api/python/config",
+              "api/python/transforms"
+            ]
+          },
+          {
+            "group": "TypeScript SDK",
+            "pages": [
+              "api/typescript/compress",
+              "api/typescript/client"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "api/cli/proxy",
+              "api/cli/wrap",
+              "api/cli/mcp",
+              "api/cli/learn",
+              "api/cli/other-commands"
+            ]
+          },
+          {
+            "group": "Proxy HTTP API",
+            "pages": [
+              "api/proxy/endpoints"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

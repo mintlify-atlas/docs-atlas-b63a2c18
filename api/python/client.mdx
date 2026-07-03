@@ -1,0 +1,496 @@
+---
+title: "HeadroomClient — SDK Client Wrapper Reference"
+sidebarTitle: "HeadroomClient"
+description: "Wrap any OpenAI- or Anthropic-compatible client with HeadroomClient to get automatic compression, cache optimization, and session metrics."
+---
+
+`HeadroomClient` is the full-featured integration path for production applications. It wraps your existing LLM client and intercepts every request, applying compression, cache alignment, and provider-specific cache optimization transparently. The wrapped client is API-compatible with the original — no call-site changes needed.
+
+```python
+from headroom import HeadroomClient, OpenAIProvider
+from openai import OpenAI
+
+client = HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    default_mode="optimize",
+)
+
+# Use exactly like the original OpenAI client
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+stats = client.get_stats()
+print(f"Tokens saved this session: {stats['session']['tokens_saved_total']}")
+```
+
+---
+
+## Constructor
+
+```python
+HeadroomClient(
+    original_client: Any,
+    provider: Provider,
+    store_url: str | None = None,
+    default_mode: str = "audit",
+    model_context_limits: dict[str, int] | None = None,
+    cache_optimizer: BaseCacheOptimizer | None = None,
+    enable_cache_optimizer: bool = True,
+    enable_semantic_cache: bool = False,
+    config: HeadroomConfig | None = None,
+)
+```
+
+<ParamField path="original_client" type="Any" required>
+  The underlying LLM client to wrap. Accepts any OpenAI-compatible client (e.g. `openai.OpenAI()`, `openai.AsyncOpenAI()`) or Anthropic client (`anthropic.Anthropic()`). The wrapped client is available as `client._original`.
+</ParamField>
+
+<ParamField path="provider" type="Provider" required>
+  Provider instance for token counting, context limits, and cost estimation. Use `OpenAIProvider()` for OpenAI-compatible APIs, `AnthropicProvider()` for Anthropic. See [Providers](#providers) below.
+</ParamField>
+
+<ParamField path="store_url" type="str | None" default="None">
+  Storage URL for the metrics database. Supports `sqlite:///path/to/headroom.db` and `jsonl:///path/to/metrics.jsonl`. Defaults to a SQLite file in the system temp directory.
+</ParamField>
+
+<ParamField path="default_mode" type="str" default='"audit"'>
+  Default operating mode for all requests. One of `"audit"` (observe only, no modifications), `"optimize"` (apply full compression pipeline). Can be overridden per request via `headroom_mode=`.
+</ParamField>
+
+<ParamField path="model_context_limits" type="dict[str, int] | None" default="None">
+  Override the context window size for specific models. Keys are model name strings; values are token counts. The provider's built-in limits are used for any model not listed here.
+</ParamField>
+
+<ParamField path="cache_optimizer" type="BaseCacheOptimizer | None" default="None">
+  Supply a custom cache optimizer instance. When `None` and `enable_cache_optimizer=True`, the optimizer is auto-detected from the provider (e.g. `AnthropicCacheOptimizer` for Anthropic, `OpenAICacheOptimizer` for OpenAI).
+</ParamField>
+
+<ParamField path="enable_cache_optimizer" type="bool" default="true">
+  Enable provider-specific cache optimization. When enabled, the client inserts `cache_control` breakpoints (Anthropic) or stabilizes the prefix (OpenAI) to maximize provider-side KV-cache hit rates.
+</ParamField>
+
+<ParamField path="enable_semantic_cache" type="bool" default="false">
+  Enable query-level semantic caching. When a new request is semantically similar to a recent one (above the configured similarity threshold), the cached response is returned immediately without calling the API.
+</ParamField>
+
+<ParamField path="config" type="HeadroomConfig | None" default="None">
+  Full [`HeadroomConfig`](/api/python/config#headroomconfig) object. When provided, takes precedence over `store_url`, `default_mode`, and other individual parameters. Use this for fine-grained control over all subsystems.
+</ParamField>
+
+---
+
+## chat.completions.create()
+
+Sends a chat completion request with optional Headroom optimization. Accepts all standard OpenAI parameters plus Headroom-specific overrides prefixed with `headroom_`.
+
+```python
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[...],
+    # Headroom overrides (all optional)
+    headroom_mode="optimize",
+    headroom_cache_prefix_tokens=8192,
+    headroom_output_buffer_tokens=2000,
+    headroom_keep_turns=5,
+    headroom_tool_profiles={"web_search": {"skip_compression": True}},
+    # Standard OpenAI params pass through unchanged
+    temperature=0.7,
+    stream=False,
+)
+```
+
+<ParamField path="model" type="str" required>
+  Model name for the completion.
+</ParamField>
+
+<ParamField path="messages" type="list[dict[str, Any]]" required>
+  Message list in OpenAI format.
+</ParamField>
+
+<ParamField path="stream" type="bool" default="false">
+  Stream the response. Headroom compresses before sending; streaming behavior is identical to the underlying client.
+</ParamField>
+
+<ParamField path="headroom_mode" type="str | None" default="None">
+  Override the client's `default_mode` for this single request. Values: `"audit"`, `"optimize"`.
+</ParamField>
+
+<ParamField path="headroom_cache_prefix_tokens" type="int | None" default="None">
+  Target number of tokens to keep in the stable, cache-aligned prefix. Passed to the cache optimizer.
+</ParamField>
+
+<ParamField path="headroom_output_buffer_tokens" type="int | None" default="None">
+  Number of tokens to reserve for the model's output when sizing the input context. Overrides `HeadroomConfig.output_buffer_tokens` (default `4000`).
+</ParamField>
+
+<ParamField path="headroom_keep_turns" type="int | None" default="None">
+  Never compress the last N turns of the conversation. Overrides the pipeline's default `protect_recent` setting.
+</ParamField>
+
+<ParamField path="headroom_tool_profiles" type="dict[str, dict[str, Any]] | None" default="None">
+  Per-tool compression overrides. Keys are tool names; values are profile dicts. For example: `{"important_tool": {"skip_compression": True}}`.
+</ParamField>
+
+<ParamField path="**kwargs" type="Any">
+  All remaining keyword arguments are forwarded verbatim to the underlying client (e.g. `temperature`, `max_tokens`, `tools`, `tool_choice`).
+</ParamField>
+
+---
+
+## messages.create() (Anthropic style)
+
+When wrapping an Anthropic client, use `client.messages.create()` instead:
+
+```python
+from headroom import HeadroomClient, AnthropicProvider
+from anthropic import Anthropic
+
+client = HeadroomClient(
+    original_client=Anthropic(),
+    provider=AnthropicProvider(),
+    default_mode="optimize",
+)
+
+response = client.messages.create(
+    model="claude-sonnet-4-5-20250929",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Summarize this report: ..."}],
+    headroom_mode="optimize",
+)
+```
+
+The `messages.create()` and `messages.stream()` methods accept the same `headroom_*` parameters as `chat.completions.create()`, plus `max_tokens`.
+
+---
+
+## chat.completions.simulate()
+
+Run the full compression pipeline and return a `SimulationResult` **without** making an API call. Use this to preview token savings before enabling `optimize` mode.
+
+```python
+plan = client.chat.completions.simulate(
+    model="gpt-4o",
+    messages=large_messages,
+)
+
+print(f"Tokens before: {plan.tokens_before}")
+print(f"Tokens after:  {plan.tokens_after}")
+print(f"Tokens saved:  {plan.tokens_saved}")
+print(f"Est. savings:  {plan.estimated_savings}")
+print(f"Transforms:    {plan.transforms}")
+```
+
+<ParamField path="model" type="str" required>
+  Model to simulate compression for.
+</ParamField>
+
+<ParamField path="messages" type="list[dict[str, Any]]" required>
+  Messages to simulate compressing.
+</ParamField>
+
+<ParamField path="headroom_mode" type="str" default='"optimize"'>
+  Which mode to simulate. Always uses `"optimize"` unless overridden.
+</ParamField>
+
+<ParamField path="headroom_output_buffer_tokens" type="int | None" default="None">
+  Output buffer to use in the simulation.
+</ParamField>
+
+<ParamField path="headroom_tool_profiles" type="dict[str, dict[str, Any]] | None" default="None">
+  Per-tool profiles to apply during simulation.
+</ParamField>
+
+### SimulationResult fields
+
+<ResponseField name="tokens_before" type="int">
+  Token count of the input messages.
+</ResponseField>
+
+<ResponseField name="tokens_after" type="int">
+  Projected token count after compression.
+</ResponseField>
+
+<ResponseField name="tokens_saved" type="int">
+  `tokens_before - tokens_after`.
+</ResponseField>
+
+<ResponseField name="transforms" type="list[str]">
+  Transforms that would be applied.
+</ResponseField>
+
+<ResponseField name="estimated_savings" type="str">
+  Human-readable cost estimate, e.g. `"$0.0042 per request"`.
+</ResponseField>
+
+<ResponseField name="messages_optimized" type="list[dict[str, Any]]">
+  The projected compressed messages (useful for inspection).
+</ResponseField>
+
+<ResponseField name="block_breakdown" type="dict[str, int]">
+  Token breakdown by block type (system, user, assistant, tool_result, etc.).
+</ResponseField>
+
+<ResponseField name="waste_signals" type="dict[str, int]">
+  Detected waste by category (json_bloat, html_noise, whitespace, repetition, etc.).
+</ResponseField>
+
+<ResponseField name="stable_prefix_hash" type="str">
+  16-character hash of the stable cache prefix after optimization.
+</ResponseField>
+
+<ResponseField name="cache_alignment_score" type="float">
+  Score between 0 and 1 indicating how cache-friendly the prefix is.
+</ResponseField>
+
+---
+
+## get_stats()
+
+Return in-memory session statistics without querying the database. This is the fast path — no I/O.
+
+```python
+stats = client.get_stats()
+
+print(stats["session"]["requests_total"])       # int
+print(stats["session"]["tokens_saved_total"])   # int
+print(stats["session"]["cache_hits"])           # int
+print(stats["config"]["mode"])                  # "audit" | "optimize"
+print(stats["config"]["provider"])              # "openai" | "anthropic" | ...
+print(stats["transforms"]["smart_crusher_enabled"])  # bool
+```
+
+<ResponseField name="session" type="dict">
+  <Expandable title="Session fields">
+    <ResponseField name="requests_total" type="int">Total requests processed this session.</ResponseField>
+    <ResponseField name="requests_optimized" type="int">Requests processed in optimize mode.</ResponseField>
+    <ResponseField name="requests_audit" type="int">Requests processed in audit mode.</ResponseField>
+    <ResponseField name="tokens_saved_total" type="int">Total tokens saved across all optimize-mode requests.</ResponseField>
+    <ResponseField name="cache_hits" type="int">Number of semantic cache hits (requires `enable_semantic_cache=True`).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="config" type="dict">
+  <Expandable title="Config fields">
+    <ResponseField name="mode" type="str">Active default mode string.</ResponseField>
+    <ResponseField name="provider" type="str">Provider name.</ResponseField>
+    <ResponseField name="cache_optimizer" type="str | None">Cache optimizer name, or `None` if disabled.</ResponseField>
+    <ResponseField name="semantic_cache" type="bool">Whether the semantic cache layer is active.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="transforms" type="dict">
+  <Expandable title="Transform flags">
+    <ResponseField name="smart_crusher_enabled" type="bool">Whether SmartCrusher is enabled in the config.</ResponseField>
+    <ResponseField name="cache_aligner_enabled" type="bool">Whether CacheAligner is enabled in the config.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## validate_setup()
+
+Run a health check against all configured subsystems. Call this during startup to catch misconfiguration early.
+
+```python
+result = client.validate_setup()
+
+if not result["valid"]:
+    print("Setup issues:", result)
+else:
+    print("All systems operational")
+```
+
+Returns a dict with a top-level `valid` boolean and per-subsystem status:
+
+<ResponseField name="valid" type="bool">
+  `True` only when all subsystems pass. `False` if any required subsystem fails.
+</ResponseField>
+
+<ResponseField name="provider" type="dict">
+  `{"ok": bool, "name": str | None, "error": str | None}` — provider token-counting test.
+</ResponseField>
+
+<ResponseField name="storage" type="dict">
+  `{"ok": bool, "url": str, "error": str | None}` — read access to the metrics database.
+</ResponseField>
+
+<ResponseField name="config" type="dict">
+  `{"ok": bool, "mode": str, "error": str | None}` — configuration validity check.
+</ResponseField>
+
+<ResponseField name="cache_optimizer" type="dict">
+  `{"ok": bool, "name": str | None, "error": str | None}` — cache optimizer status. A failure here does not set `valid=False` (cache issues are non-fatal).
+</ResponseField>
+
+---
+
+## get_metrics() and get_summary()
+
+For historical analysis, query the metrics database directly:
+
+```python
+from datetime import datetime, timedelta
+
+# Per-request metrics (last hour, up to 100 records)
+metrics = client.get_metrics(
+    start_time=datetime.utcnow() - timedelta(hours=1),
+    limit=100,
+    model="gpt-4o",      # optional filter
+    mode="optimize",     # optional filter
+)
+
+# Aggregate summary
+summary = client.get_summary(
+    start_time=datetime.utcnow() - timedelta(days=1),
+)
+```
+
+Both methods return structured data types — `get_metrics()` returns `list[RequestMetrics]` and `get_summary()` returns a summary dict. See [`RequestMetrics`](/api/python/config#requestmetrics) for the full field listing.
+
+---
+
+## Providers
+
+Providers supply token counting, context limits, and cost estimation. Import them from `headroom`:
+
+<CodeGroup>
+
+```python OpenAIProvider
+from headroom import HeadroomClient, OpenAIProvider
+from openai import OpenAI
+
+client = HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    default_mode="optimize",
+)
+```
+
+```python AnthropicProvider
+from headroom import HeadroomClient, AnthropicProvider
+from anthropic import Anthropic
+
+client = HeadroomClient(
+    original_client=Anthropic(),
+    provider=AnthropicProvider(),
+    default_mode="optimize",
+)
+```
+
+</CodeGroup>
+
+Both providers implement the `Provider` protocol, which exposes:
+- `provider.get_token_counter(model)` — returns a `TokenCounter` for the given model
+- `provider.get_context_limit(model)` — returns the context window size in tokens
+- `provider.estimate_cost(input_tokens, output_tokens, model)` — returns cost in USD or `None`
+
+---
+
+## HeadroomMode
+
+`HeadroomMode` is a string enum that controls how the pipeline processes each request.
+
+```python
+from headroom import HeadroomMode
+
+HeadroomMode.AUDIT     # "audit"    — observe only, never modify messages
+HeadroomMode.OPTIMIZE  # "optimize" — run full compression pipeline
+HeadroomMode.SIMULATE  # "simulate" — plan without API call (via .simulate())
+```
+
+Pass the string value directly to the constructor or per-request override:
+
+```python
+client = HeadroomClient(..., default_mode="optimize")
+
+# Or override per request:
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[...],
+    headroom_mode="audit",
+)
+```
+
+---
+
+## with_memory()
+
+`with_memory()` is an optional function that enables hierarchical memory for multi-turn or multi-agent workflows. It requires the `memory` extra: `pip install headroom-ai[memory]`.
+
+```python
+from headroom import with_memory, HeadroomClient, OpenAIProvider
+from openai import OpenAI
+
+base_client = HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    default_mode="optimize",
+)
+
+# Attach user-scoped memory
+memory_client = with_memory(base_client, user_id="user_123")
+
+# Now requests automatically inject relevant memories from previous sessions
+response = memory_client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What did we discuss last week?"}],
+)
+```
+
+<Note>
+  `with_memory` is `None` when the `memory` extra is not installed. Always check `if with_memory is not None` before calling it in environments where the extra may be absent.
+</Note>
+
+---
+
+## Context Manager
+
+`HeadroomClient` supports the context manager protocol to automatically close the storage connection:
+
+```python
+with HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    default_mode="optimize",
+) as client:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello!"}],
+    )
+# Storage connection closed automatically
+```
+
+---
+
+## Error Handling
+
+```python
+from headroom import (
+    HeadroomClient, OpenAIProvider,
+    ConfigurationError, ProviderError, CompressionError,
+)
+from openai import OpenAI
+
+client = HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    default_mode="optimize",
+)
+
+try:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[...],
+    )
+except ConfigurationError as e:
+    print(f"Config issue: {e.details}")
+except ProviderError as e:
+    print(f"Provider issue (unknown model?): {e}")
+except CompressionError as e:
+    print(f"Compression failed: {e}")
+```
+
+All Headroom exceptions extend `HeadroomError` and include a `details` dict with additional context.

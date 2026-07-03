@@ -1,0 +1,223 @@
+---
+title: "Share Compressed Context Across Multi-Agent Workflows"
+sidebarTitle: "Shared Context"
+description: "Pass compressed context between agents without replaying full outputs. SharedContext compresses and retrieves agent handoff data with ~80% token savings."
+---
+
+When agents hand off to each other, context is typically replayed in full — every research finding, every tool output, every intermediate result sent again to the next model. `SharedContext` solves this by compressing what moves between agents using Headroom's full pipeline, typically saving **~80% of tokens** on agent handoffs while keeping the original available on demand.
+
+## Quick Start
+
+```python
+from headroom import SharedContext
+
+ctx = SharedContext()
+
+# Agent A stores large output
+ctx.put("research", big_research_output, agent="researcher")
+
+# Agent B gets compressed version (~80% smaller)
+summary = ctx.get("research")
+
+# Agent B needs full details on something specific
+full = ctx.get("research", full=True)
+```
+
+## API Reference
+
+### `put(key, content, agent=None)`
+
+Store content under a key. Compresses automatically using Headroom's full pipeline — SmartCrusher for JSON, CodeCompressor for code, Kompress for text.
+
+```python
+entry = ctx.put("findings", big_json_output, agent="researcher")
+
+entry.original_tokens     # 20,000
+entry.compressed_tokens   # 4,000
+entry.savings_percent     # 80.0
+entry.transforms          # ["router:json:0.20"]
+```
+
+The optional `agent` argument records which agent stored the entry for provenance tracking.
+
+### `get(key, full=False)`
+
+Retrieve content. Returns the compressed version by default; pass `full=True` for the original.
+
+```python
+compressed = ctx.get("findings")              # 4K tokens
+original   = ctx.get("findings", full=True)   # 20K tokens
+missing    = ctx.get("nonexistent")           # None (not found or expired)
+```
+
+### `get_entry(key)`
+
+Get the full `ContextEntry` object with metadata:
+
+```python
+entry = ctx.get_entry("findings")
+
+entry.key                 # "findings"
+entry.agent               # "researcher"
+entry.original_tokens     # 20,000
+entry.compressed_tokens   # 4,000
+entry.savings_percent     # 80.0
+entry.transforms          # ["router:json:0.20"]
+entry.timestamp           # Unix timestamp when stored
+```
+
+### `stats()`
+
+Aggregated statistics across all live (non-expired) entries:
+
+```python
+stats = ctx.stats()
+
+stats.entries                  # 3
+stats.total_original_tokens    # 60,000
+stats.total_compressed_tokens  # 12,000
+stats.total_tokens_saved       # 48,000
+stats.savings_percent          # 80.0
+```
+
+### `keys()` and `clear()`
+
+```python
+ctx.keys()    # list of all non-expired keys
+ctx.clear()   # remove all entries
+```
+
+## Configuration
+
+```python
+from headroom import SharedContext
+
+ctx = SharedContext(
+    model="claude-sonnet-4-5-20250929",  # For token counting
+    ttl=3600,                             # Entry TTL in seconds (default: 1 hour)
+    max_entries=100,                      # Evicts oldest when full (default: 100)
+)
+```
+
+Entries expire after `ttl` seconds. When `max_entries` is reached, expired entries are evicted first; then the oldest live entry is removed.
+
+## Cross-Agent Memory vs. SharedContext
+
+<CardGroup cols={2}>
+  <Card title="SharedContext" icon="arrow-right-arrow-left">
+    **Ephemeral, in-process.** Designed for a single workflow run — one orchestrator handing work between agents. Entries live in memory (with a TTL), so they vanish when the process exits. No persistence across sessions.
+  </Card>
+  <Card title="Cross-Agent Memory" icon="brain">
+    **Persistent, cross-session.** Designed for long-lived facts (preferences, project conventions) that should be recalled in every future session, regardless of which agent runs. Uses `Memory()` and is stored durably on disk.
+  </Card>
+</CardGroup>
+
+Use `SharedContext` when you need to pass large intermediate outputs between agents in a single workflow. Use [persistent memory](/features/memory) when you need to remember something across many future sessions.
+
+## Two-Agent Example
+
+Here is a complete example of two agents sharing context via `SharedContext`:
+
+```python
+from headroom import SharedContext
+
+ctx = SharedContext()
+
+# ── Agent A: Researcher ───────────────────────────────────────────────────────
+def researcher_agent(topic: str) -> str:
+    # Simulate a large research output
+    big_output = fetch_and_compile_research(topic)
+
+    # Store it — automatically compressed
+    entry = ctx.put("research_findings", big_output, agent="researcher")
+    print(f"Stored {entry.original_tokens} tokens → {entry.compressed_tokens} tokens "
+          f"({entry.savings_percent:.1f}% saved)")
+
+    # Return the compressed summary to the orchestrator
+    return ctx.get("research_findings")
+
+
+# ── Agent B: Coder ────────────────────────────────────────────────────────────
+def coder_agent() -> str:
+    # Get the compressed summary for context window efficiency
+    summary = ctx.get("research_findings")
+
+    # Fetch the full original only when generating the actual code
+    full_findings = ctx.get("research_findings", full=True)
+
+    return generate_code(summary, full_details=full_findings)
+
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+summary = researcher_agent("distributed tracing in Python")
+code    = coder_agent()
+```
+
+## Framework Examples
+
+<Tabs>
+  <Tab title="CrewAI">
+    ```python
+    from headroom import SharedContext
+
+    ctx = SharedContext()
+
+    # After researcher task completes
+    ctx.put("findings", researcher_task.output.raw)
+
+    # Coder task gets compressed context
+    coder_context = ctx.get("findings")
+    ```
+  </Tab>
+  <Tab title="LangGraph">
+    ```python
+    from headroom import SharedContext
+
+    ctx = SharedContext()
+
+    def researcher_node(state):
+        result = do_research()
+        ctx.put("research", result)
+        return {"research_summary": ctx.get("research")}
+
+    def coder_node(state):
+        # Compressed summary in state, full details on demand
+        full = ctx.get("research", full=True)
+        return {"code": write_code(full)}
+    ```
+  </Tab>
+  <Tab title="OpenAI Agents SDK">
+    ```python
+    from headroom import SharedContext
+
+    ctx = SharedContext()
+
+    def compress_handoff(messages):
+        for msg in messages:
+            if len(msg.content) > 1000:
+                ctx.put(msg.id, msg.content)
+                msg.content = ctx.get(msg.id)
+        return messages
+
+    handoff(agent=coder, input_filter=compress_handoff)
+    ```
+  </Tab>
+</Tabs>
+
+## How It Works
+
+Under the hood, `put()` calls `headroom.compress()` — the same pipeline used by the proxy and MCP server — and stores the original in memory. `get()` returns the compressed version; `get(full=True)` returns the original.
+
+The compression pipeline routes each entry to the best compressor automatically:
+
+| Content type | Compressor | Typical savings |
+|---|---|---|
+| JSON arrays / objects | SmartCrusher | 70–95% |
+| Code (Python, JS, Go…) | CodeCompressor (AST-aware) | 40–70% |
+| Prose / logs / text | Kompress-v2-base | 30–60% |
+
+The result is the same token budget as if you had summarized manually — with no extra LLM call.
+
+<Note>
+  `SharedContext` uses the same compression pipeline as the proxy but runs in-process with no network overhead. Originals are held in memory (bounded by `max_entries` and `ttl`) and are never written to disk.
+</Note>

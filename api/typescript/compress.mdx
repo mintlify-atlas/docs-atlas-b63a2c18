@@ -1,0 +1,264 @@
+---
+title: "TypeScript compress() Function — Full API Reference"
+sidebarTitle: "compress()"
+description: "Complete reference for the Headroom compress() function: options, return fields, error handling, and multi-format usage examples for TypeScript."
+---
+
+The `compress()` function is the primary entry point for reducing message context in any TypeScript or JavaScript application. It accepts a message array in any supported format — OpenAI, Anthropic, Vercel AI SDK, or Google Gemini — auto-detects the format, routes through the Headroom proxy for compression, and returns compressed messages in the same format as the input.
+
+```typescript
+import { compress } from "headroom-ai";
+```
+
+<Note>
+  `compress()` requires a running Headroom proxy. Start one with `headroom proxy` (default port 8787) or `headroom wrap <tool>`. The `baseUrl` option defaults to `http://localhost:8787` and can be overridden via `HEADROOM_BASE_URL`.
+</Note>
+
+---
+
+## Signature
+
+```typescript
+async function compress(
+  messages: any[],
+  options?: CompressOptions,
+): Promise<CompressResult>
+```
+
+---
+
+## Parameters
+
+<ParamField body="messages" type="any[]" required>
+  The message array to compress. Accepts OpenAI (`role`/`content` objects), Anthropic (`role`/`content`), Vercel AI SDK, or Google Gemini format. Format is detected automatically via `detectFormat()`.
+</ParamField>
+
+<ParamField body="options" type="CompressOptions">
+  Optional configuration for the compression call. All fields are optional.
+
+  <Expandable title="CompressOptions fields">
+    <ParamField body="model" type="string">
+      The model name used for token counting and context-window budgeting (e.g. `"gpt-4o"`, `"claude-opus-4-5"`). Defaults to `"gpt-4o"`.
+    </ParamField>
+
+    <ParamField body="baseUrl" type="string">
+      URL of the Headroom proxy. Defaults to `HEADROOM_BASE_URL` env var or `http://localhost:8787`.
+    </ParamField>
+
+    <ParamField body="apiKey" type="string">
+      Bearer token sent as `Authorization: Bearer <key>`. Reads `HEADROOM_API_KEY` env var when unset.
+    </ParamField>
+
+    <ParamField body="timeout" type="number">
+      Request timeout in milliseconds. Defaults to `30000` (30 s).
+    </ParamField>
+
+    <ParamField body="fallback" type="boolean">
+      When `true` (default), returns the original uncompressed messages on proxy failure instead of throwing. Set to `false` to propagate errors.
+    </ParamField>
+
+    <ParamField body="retries" type="number">
+      Number of additional retry attempts on recoverable errors (5xx, connection failures). Defaults to `1`.
+    </ParamField>
+
+    <ParamField body="tokenBudget" type="number">
+      Target token count. When set, the proxy compresses aggressively until the message array fits within this budget.
+    </ParamField>
+
+    <ParamField body="hooks" type="CompressionHooks">
+      Optional lifecycle hooks for pre/post processing and importance score biasing. See the Hooks section below.
+    </ParamField>
+
+    <ParamField body="client" type="HeadroomClientInterface">
+      Supply a pre-configured `HeadroomClient` instance instead of constructing one from the other options. Useful for sharing a single client across many `compress()` calls.
+    </ParamField>
+
+    <ParamField body="stack" type="string">
+      Integration slug sent as `X-Headroom-Stack` on every request (e.g. `"adapter_ts_openai"`).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Return value — `CompressResult`
+
+<ResponseField name="messages" type="any[]">
+  Compressed messages in the same format as the input (OpenAI, Anthropic, Vercel AI SDK, or Gemini).
+</ResponseField>
+
+<ResponseField name="tokensBefore" type="number">
+  Token count of the original uncompressed message array.
+</ResponseField>
+
+<ResponseField name="tokensAfter" type="number">
+  Token count after compression.
+</ResponseField>
+
+<ResponseField name="tokensSaved" type="number">
+  Absolute tokens saved: `tokensBefore - tokensAfter`.
+</ResponseField>
+
+<ResponseField name="compressionRatio" type="number">
+  Ratio of compressed to original size (`tokensAfter / tokensBefore`). A value of `0.3` means 70 % reduction.
+</ResponseField>
+
+<ResponseField name="transformsApplied" type="string[]">
+  Names of the compression transforms that ran (e.g. `["SmartCrusher", "ToolCrusher", "CCR"]`).
+</ResponseField>
+
+<ResponseField name="ccrHashes" type="string[]">
+  CCR (Compress-Cache-Retrieve) content hashes for any content archived in the retrieval store. The agent can call `headroom_retrieve` with these hashes.
+</ResponseField>
+
+<ResponseField name="compressed" type="boolean">
+  `true` when at least one transform reduced the context. `false` on a passthrough (e.g. fallback mode, or messages already within budget).
+</ResponseField>
+
+---
+
+## Usage examples
+
+<CodeGroup>
+```typescript OpenAI
+import OpenAI from "openai";
+import { compress } from "headroom-ai";
+
+const client = new OpenAI();
+
+const messages = [
+  { role: "user", content: "Summarize this long document..." },
+  // ... hundreds more turns
+];
+
+const { messages: compressed, tokensSaved } = await compress(messages, {
+  model: "gpt-4o",
+});
+
+console.log(`Saved ${tokensSaved} tokens`);
+
+const response = await client.chat.completions.create({
+  model: "gpt-4o",
+  messages: compressed,
+});
+```
+
+```typescript Anthropic
+import Anthropic from "@anthropic-ai/sdk";
+import { compress } from "headroom-ai";
+
+const client = new Anthropic();
+
+// Anthropic-format messages are auto-detected
+const anthropicMessages = [
+  { role: "user", content: [{ type: "text", text: "Hello" }] },
+];
+
+const result = await compress(anthropicMessages, {
+  model: "claude-opus-4-5",
+  baseUrl: "http://localhost:8787",
+});
+
+const response = await client.messages.create({
+  model: "claude-opus-4-5",
+  max_tokens: 1024,
+  messages: result.messages, // still in Anthropic format
+});
+```
+
+```typescript With token budget
+import { compress } from "headroom-ai";
+
+// Force the context to fit within a 32k token budget
+const { messages, compressionRatio } = await compress(messages, {
+  model: "gpt-4o",
+  tokenBudget: 32_000,
+  fallback: false, // throw on failure
+});
+
+console.log(`Compression ratio: ${compressionRatio.toFixed(2)}`);
+```
+
+```typescript Shared client
+import { HeadroomClient, compress } from "headroom-ai";
+
+const client = new HeadroomClient({
+  baseUrl: "http://localhost:8787",
+  timeout: 15_000,
+  fallback: true,
+});
+
+// Re-use the same client for all compress() calls
+const result = await compress(messages, { client, model: "gpt-4o" });
+```
+</CodeGroup>
+
+---
+
+## Error handling
+
+When `fallback: false` is set, `compress()` surfaces the full error hierarchy. Import error classes directly:
+
+```typescript
+import {
+  HeadroomError,
+  HeadroomConnectionError,
+  HeadroomAuthError,
+  HeadroomCompressError,
+  ConfigurationError,
+} from "headroom-ai";
+
+try {
+  const result = await compress(messages, { fallback: false });
+} catch (err) {
+  if (err instanceof HeadroomConnectionError) {
+    // Proxy is not running or unreachable
+  } else if (err instanceof HeadroomAuthError) {
+    // HEADROOM_API_KEY missing or invalid (HTTP 401)
+  } else if (err instanceof HeadroomCompressError) {
+    // Proxy returned an error response
+    console.error(err.statusCode, err.errorType, err.message);
+  } else if (err instanceof ConfigurationError) {
+    // Bad configuration passed to the proxy
+  }
+}
+```
+
+| Class | Trigger |
+|---|---|
+| `HeadroomConnectionError` | Proxy is unreachable (ECONNREFUSED, timeout) |
+| `HeadroomAuthError` | HTTP 401 — missing or invalid API key |
+| `HeadroomCompressError` | HTTP 4xx/5xx from the proxy; carries `statusCode` and `errorType` |
+| `ConfigurationError` | Invalid configuration sent to the proxy |
+| `ProviderError` | Upstream LLM provider returned an error |
+| `StorageError` | CCR storage failure |
+| `TokenizationError` | Token-count calculation failed |
+| `CacheError` | Semantic cache failure |
+| `ValidationError` | Request failed schema validation |
+| `TransformError` | A specific compression transform failed |
+
+---
+
+## Compression hooks
+
+Pass a `CompressionHooks` instance to intercept the compression lifecycle:
+
+```typescript
+import { compress, CompressionHooks } from "headroom-ai";
+
+const hooks = new CompressionHooks({
+  async preCompress(messages, ctx) {
+    console.log(`Turn ${ctx.turnNumber}, query: ${ctx.userQuery}`);
+    return messages; // optionally transform before compression
+  },
+  async computeBiases(messages, ctx) {
+    // Return token-index → importance-score biases
+    return {};
+  },
+  async postCompress(event) {
+    console.log(`Saved ${event.tokensSaved} tokens via ${event.transformsApplied}`);
+  },
+});
+
+const result = await compress(messages, { hooks });
+```

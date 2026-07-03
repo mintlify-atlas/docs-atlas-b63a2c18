@@ -1,0 +1,127 @@
+---
+title: "Reduce Output Tokens with Verbosity Steering"
+sidebarTitle: "Output Tokens"
+description: "Cut what the LLM writes back, not just what you send. Verbosity steering and effort routing trim preambles, restated code, and needless thinking steps."
+---
+
+Everything in Headroom's core pipeline shrinks the prompt you *send*. But you also pay for every token the model *writes back* — and on Opus-class models, output costs **5× input**. A lot of that output is waste: "Great, let me…" preambles, re-printing code you just showed it, and deep "thinking" on routine steps like reading a file.
+
+Headroom can trim that too, from the proxy, without you changing any code.
+
+## Two Mechanisms
+
+<CardGroup cols={2}>
+  <Card title="Verbosity Steering" icon="sliders">
+    Appends a short "be terse, don't restate context" note to the end of the system prompt — after the existing prompt, so your provider's prefix cache still hits.
+  </Card>
+  <Card title="Effort Routing" icon="route">
+    When a turn is just the model resuming after a tool result (a file read, a passing test), it dials the model's thinking effort down. New questions and errors keep full effort.
+  </Card>
+</CardGroup>
+
+## Enable
+
+```bash
+export HEADROOM_OUTPUT_SHAPER=1     # off by default
+headroom proxy --port 8787
+```
+
+Both mechanisms are off by default. Setting `HEADROOM_OUTPUT_SHAPER=1` before starting (or wrapping) enables them together.
+
+<Warning>
+  If a proxy is already running and you export the variable afterwards, the proxy won't see it — its environment was snapshotted at launch. Use `headroom wrap` instead: it hot-syncs your current settings to the running proxy via `POST /admin/runtime-env`, so the change takes effect immediately with no restart, no cold start, and no dropped requests or lost caches. Set the variable **before** you run `headroom wrap`.
+</Warning>
+
+## Learn the Right Terseness Level Automatically
+
+People don't *say* how terse they want answers — they *show* it: they interrupt long replies or move on before they could have read them. `headroom learn --verbosity` mines those behavioral signals from your past sessions and picks the level automatically.
+
+```bash
+# Preview what it found (dry run)
+headroom learn --verbosity
+
+# Persist the level; the proxy uses it from now on
+headroom learn --verbosity --apply
+```
+
+Verbosity levels range from **1** (skip ceremony) through **4** (caveman/fragments). With `--apply`, Headroom hot-enables the output shaper on the running proxy — no restart needed.
+
+<Tip>
+  Add `--llm-judge` to let an LLM override the heuristic level with a one-sentence rationale. Requires an API key. Example: `headroom learn --verbosity --llm-judge --apply`
+</Tip>
+
+## See Your Savings Estimate
+
+Output savings are *counterfactual* — Headroom never sees what the model *would* have written — so it reports an honest **estimate with a confidence range**, never a made-up number:
+
+```bash
+headroom output-savings
+# Reduction: 31.7%  (95% CI 27.7% … 35.7%)   [estimated]
+```
+
+## Get a Measured Number Instead
+
+Leave 10% of conversations unshaped as a control group:
+
+```bash
+export HEADROOM_OUTPUT_HOLDOUT=0.1
+```
+
+With a holdout set, the dashboard shows an **Output Tokens Saved** card labelled `measured` rather than `estimated`, with a tighter confidence band derived from the actual control group.
+
+```bash
+headroom dashboard      # shows Output Tokens Saved card
+```
+
+## Hot-Sync to a Running Proxy
+
+All output-shaper env vars are read *live* on every request. If you need to change settings without restarting the proxy, send them directly via the admin endpoint:
+
+```bash
+# Enable the output shaper on a running proxy, no restart
+curl -s -X POST http://127.0.0.1:8787/admin/runtime-env \
+  -H "Content-Type: application/json" \
+  -d '{"HEADROOM_OUTPUT_SHAPER": "1"}'
+```
+
+`headroom wrap` calls this endpoint automatically when it reuses an already-running proxy, so your settings always take effect immediately.
+
+<Note>
+  On a shared proxy, runtime overrides are global — the last explicit setting wins. Be intentional when multiple developers share a single proxy instance.
+</Note>
+
+## End-to-End Example
+
+<Steps>
+  <Step title="Learn your verbosity level">
+    ```bash
+    headroom learn --verbosity --apply
+    # >> Recommended verbosity level: 2 (confidence: high)
+    # [WROTE] ~/.headroom/verbosity.json (level 2)
+    # ✓ Output shaper enabled on the running proxy (port 8787)
+    ```
+  </Step>
+  <Step title="Enable the shaper and start the proxy">
+    ```bash
+    export HEADROOM_OUTPUT_SHAPER=1
+    export HEADROOM_OUTPUT_HOLDOUT=0.1   # optional: measured control group
+    headroom proxy --port 8787
+    ```
+  </Step>
+  <Step title="Check your savings">
+    ```bash
+    headroom output-savings
+    # Reduction: 31.7%  (95% CI 27.7% … 35.7%)   [measured]
+
+    headroom dashboard   # live Output Tokens Saved card
+    ```
+  </Step>
+</Steps>
+
+## Configuration Reference
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HEADROOM_OUTPUT_SHAPER` | `0` | Master switch — enables verbosity steering and effort routing |
+| `HEADROOM_OUTPUT_HOLDOUT` | `0` | Fraction of conversations left unshaped for a measured control group (e.g. `0.1` = 10%) |
+| `HEADROOM_VERBOSITY_LEVEL` | *(from verbosity.json)* | Override the learned level directly (`1`–`4`) |

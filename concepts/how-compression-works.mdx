@@ -1,0 +1,188 @@
+---
+title: "How Headroom Compresses Your Agent's LLM Context"
+sidebarTitle: "Compression"
+description: "A deep dive into Headroom's content-aware compression pipeline: auto-detection, SmartCrusher, CodeCompressor, Kompress-v2-base, and per-type savings."
+---
+
+Headroom automatically detects what kind of content you're sending and routes it to the right compressor — no configuration required. Every request flows through a two-stage pipeline: **CacheAligner** stabilizes prefixes so provider KV caches hit, and **ContentRouter** dispatches each message block to the optimal compressor based on its detected content type. The result is 40–95% fewer tokens with the same answers, and full reversibility via the CCR architecture.
+
+## The Two-Stage Pipeline
+
+```text
+Your messages (tool outputs · logs · RAG chunks · code · history)
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Stage 1 — CacheAligner                                     │
+│  Detects volatile tokens (UUIDs, ISO 8601 timestamps, JWTs, │
+│  hex hashes) and emits warnings so you know the cache       │
+│  prefix is unstable. Never modifies the prompt.             │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Stage 2 — ContentRouter                                    │
+│  Detects content type per message block and routes to the   │
+│  best compressor:                                           │
+│    ├─ SmartCrusher      (JSON arrays)                       │
+│    ├─ CodeCompressor    (AST-aware source code)             │
+│    ├─ LogCompressor     (shell / build / test logs)         │
+│    ├─ SearchCompressor  (grep / ripgrep results)            │
+│    └─ Kompress-v2-base  (plain text, HuggingFace ML)        │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+Compressed messages → LLM provider
+```
+
+## Content Type Detection
+
+The router detects content type by analyzing structure and patterns. Detection uses Magika (a Google ML model) when the `[ml]` extra is installed, falling back to fast heuristics when it isn't. No manual hints are needed.
+
+| Content Type | Detection Signal | Compressor | Typical Savings |
+|---|---|---|---|
+| JSON arrays | Valid JSON with array elements | SmartCrusher | 70–90% |
+| Source code | Syntax patterns, indentation, keywords | CodeCompressor | 40–70% |
+| Build / test logs | Timestamps, log levels, pytest / npm markers | LogCompressor | 80–95% |
+| Search results | `file:line:content` format | SearchCompressor | 60–80% |
+| Plain text | Fallback for prose and unstructured output | Kompress-v2-base | 30–50% |
+| Images | Binary content | ML image router | 40–90% |
+
+<Note>
+  Code compression via `CodeCompressor` is opt-in and disabled by default.
+  Enable it with the `[code]` extra: `pip install "headroom-ai[code]"`.
+</Note>
+
+## SmartCrusher — Statistical JSON Compression
+
+SmartCrusher is the primary compressor for JSON arrays produced by tool calls. It performs **field-level statistical analysis** to identify which items carry unique information and which are redundant.
+
+### How it works
+
+<Steps>
+  <Step title="Parse">
+    The input is parsed as JSON. SmartCrusher handles arrays of dicts, arrays of strings, arrays of numbers, flat objects with many keys, and nested objects (compressed recursively).
+  </Step>
+  <Step title="Statistical analysis">
+    For each field across all array items, SmartCrusher computes variance, uniqueness ratios, and change-point detection (using a fixed window of 5 items). Fields below the `uniqueness_threshold` (default `0.1`) are flagged as near-constant.
+  </Step>
+  <Step title="Representative sampling">
+    The **Kneedle algorithm** runs on cumulative bigram coverage to find the knee — the point where adding more items yields diminishing new information. This determines `K`, the target item count. By default: 30% of `K` from the array start, 15% from the end, and 55% by importance score (errors, anomalies, relevance to the user query).
+  </Step>
+  <Step title="Anomaly and error preservation">
+    Items are **always** kept regardless of the K budget if they contain error indicators or are statistical anomalies (more than 2 standard deviations from the numeric mean). This ensures debugging signals survive compression.
+  </Step>
+  <Step title="Factor out constants (optional)">
+    When `factor_out_constants=True`, fields that share the same value across all items are hoisted into a header, shrinking every row. Disabled by default to preserve the original JSON schema.
+  </Step>
+</Steps>
+
+```python
+from headroom import compress
+
+# SmartCrusher runs automatically on JSON tool outputs
+result = compress(messages, model="claude-sonnet-4-5-20250929")
+print(f"Tokens saved: {result.tokens_saved}")
+print(f"Compression ratio: {result.compression_ratio:.0%}")
+print(f"Transforms applied: {result.transforms_applied}")
+```
+
+### Safety guarantees
+
+SmartCrusher never produces output that changes the JSON schema — no wrappers, no generated text, no metadata fields. The output is always a valid subset of the original array.
+
+## CodeCompressor — AST-Aware Source Code
+
+`CodeCompressor` uses **tree-sitter** to parse source code into an AST before compressing it, guaranteeing syntactically valid output.
+
+### Supported languages
+
+<CardGroup cols={2}>
+  <Card title="Tier 1 — Full support" icon="code">
+    Python, JavaScript, TypeScript
+  </Card>
+  <Card title="Tier 2 — Structural support" icon="code">
+    Go, Rust, Java, C, C++
+  </Card>
+</CardGroup>
+
+### Compression strategy
+
+1. Parse source into an AST with tree-sitter (thread-local parsers — no shared mutable state)
+2. Extract and unconditionally preserve: imports, function signatures, type annotations, class definitions, error handlers
+3. Rank functions by semantic importance
+4. Compress function bodies while keeping signatures intact
+5. Reassemble into syntactically valid code
+
+```python
+from headroom import compress, CompressConfig
+
+# Code compression is opt-in
+result = compress(
+    messages,
+    model="gpt-4o",
+    config=CompressConfig(protect_analysis_context=True),
+)
+```
+
+<Warning>
+  `protect_analysis_context=True` (the default) detects `analyze`/`review` intent in the user query and skips code compression for those turns. Set it to `False` only when you're sure the model doesn't need full code bodies.
+</Warning>
+
+## Kompress-v2-base — ML Text Compression
+
+For plain prose, READMEs, documentation, and other unstructured text, Headroom uses **Kompress-v2-base** — a ModernBERT model fine-tuned on agentic traces and published on HuggingFace.
+
+- **Model**: [`chopratejas/kompress-v2-base`](https://huggingface.co/chopratejas/kompress-v2-base)
+- **Runtime**: ONNX INT8 inference (weight-only quantization, 261 MB). No GPU required.
+- **Must-keep tokens**: numbers, ALLCAPS identifiers (`SIGILL`, `HTTP`), dotted paths (`libsystem_kernel.dylib`), unix paths, file extensions, CLI flags, and CamelCase names are always preserved regardless of model score — these carry semantic meaning agents cannot reconstruct from context.
+- **Target ratio**: Configurable via `target_ratio` (e.g. `0.5` keeps 50% of tokens). Default is aggressive (`~15%` kept).
+
+```python
+from headroom import compress, CompressConfig
+
+# Conservative text compression — keep 50%
+result = compress(
+    messages,
+    model="claude-sonnet-4-5-20250929",
+    config=CompressConfig(
+        target_ratio=0.5,
+        kompress_model="chopratejas/kompress-v2-base",  # default
+    ),
+)
+```
+
+<Tip>
+  Install the `[ml]` extra for Kompress inference: `pip install "headroom-ai[ml]"`. Without it, the text compressor falls back to heuristic token filtering.
+</Tip>
+
+## LogCompressor — Shell, Build, and Test Logs
+
+`LogCompressor` targets the verbose, repetitive output produced by build systems, test runners, and shell commands — the highest-savings category Headroom handles.
+
+It detects logs via timestamps, log levels (`INFO`, `WARN`, `ERROR`), and pytest/npm/cargo markers. Compression clusters repeated log patterns and drops redundant lines while **always preserving**:
+
+- Lines containing error keywords (`error`, `fatal`, `exception`, `traceback`)
+- Stack traces
+- Statistical anomalies in numeric fields (e.g. abnormally high durations)
+- The first and last lines of each logical section
+
+Typical savings: **80–95%** — a 65,000-token incident log can compress to under 5,200 tokens with the same FATAL error intact.
+
+## Image Compression
+
+Images embedded in messages are routed to a trained ML router that selects the optimal compression strategy per image. Reduction ranges from **40–90%** depending on content type (screenshots compress more than photographs). Requires the `[image]` extra.
+
+## How Transforms Chain Together
+
+Each compressor is independent and fails gracefully — if a compressor errors, the original content is returned unchanged. Transforms are applied in message order and their results are logged in `CompressResult.transforms_applied`:
+
+```python
+result = compress(messages, model="gpt-4o")
+
+# e.g. ["router:tool_result:json", "smart_crusher", "router:tool_result:text", "kompress"]
+for transform in result.transforms_applied:
+    print(transform)
+```
+
+The routing markers emitted by `ContentRouter` follow the format `router:<message_role>:<detected_type>`, making it straightforward to audit exactly what was compressed and why.

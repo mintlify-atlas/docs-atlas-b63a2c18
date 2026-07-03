@@ -1,0 +1,269 @@
+---
+title: "headroom proxy — Start the Compression Proxy Server"
+sidebarTitle: "proxy"
+description: "Full flag reference for headroom proxy: ports, modes, backends, memory, learning, CCR, code-aware compression, rate limits, and telemetry options."
+---
+
+`headroom proxy` starts the Headroom optimization proxy — an HTTP server that sits between your AI agent and the upstream LLM provider. Every request that passes through it has its message context compressed before being forwarded, reducing token spend and latency with no changes to your agent code.
+
+```bash
+# Start on the default port 8787
+headroom proxy
+
+# OpenAI-compatible clients
+OPENAI_BASE_URL=http://localhost:8787/v1 your-app
+
+# Claude Code
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+```
+
+<Note>
+  For one-command setup that starts the proxy AND launches an agent, use [`headroom wrap <tool>`](/api/cli/wrap) instead.
+</Note>
+
+---
+
+## Core options
+
+<ParamField query="--host" type="string" default="127.0.0.1">
+  Host to bind the server to. Set to `0.0.0.0` for Docker/remote access. Env: `HEADROOM_HOST`.
+</ParamField>
+
+<ParamField query="--port / -p" type="integer" default="8787">
+  Port to bind to (1–65535). Env: `HEADROOM_PORT`.
+</ParamField>
+
+<ParamField query="--workers" type="integer" default="1">
+  Number of Uvicorn worker processes. Increase for high-concurrency deployments. Env: `HEADROOM_WORKERS`.
+</ParamField>
+
+<ParamField query="--mode" type="token | cache">
+  Optimization mode. `token` (default) prioritizes maximum token reduction; prior turns may be rewritten. `cache` freezes prior turns to maximize provider prefix-cache hit rates. Legacy aliases `token_mode`, `cache_mode`, `token_savings`, `cost_savings`, and `token_headroom` are still accepted. Env: `HEADROOM_MODE`.
+</ParamField>
+
+<ParamField query="--no-optimize" type="flag">
+  Disable all compression — run as a passthrough proxy only. Useful for debugging or measuring baseline usage.
+</ParamField>
+
+<ParamField query="--no-cache" type="flag">
+  Disable the semantic response cache.
+</ParamField>
+
+<ParamField query="--target-ratio" type="float">
+  Override the Kompress keep-ratio for prose/code compression. Lower is more aggressive (e.g. `0.4` keeps ~40 % of tokens). Unset by default — Kompress decides via its own importance threshold. Env: `HEADROOM_TARGET_RATIO`.
+</ParamField>
+
+---
+
+## Logging
+
+<ParamField query="--log-file" type="string">
+  Path to write request/response logs as JSONL. Each line is a JSON object with fields: `timestamp`, `request_id`, `model`, `tokens_before`, `tokens_after`, `latency_ms`, etc. Disabled in `--stateless` mode. Env: `HEADROOM_LOG_FILE`.
+</ParamField>
+
+<ParamField query="--log-messages" type="flag">
+  Enable full message logging — request/response content is stored in the log file. **Warning: may log sensitive data.** Env: `HEADROOM_LOG_MESSAGES`.
+</ParamField>
+
+---
+
+## Budget & rate limiting
+
+<ParamField query="--budget" type="float">
+  Spend cap in USD per `--budget-period`. Requests are rejected with HTTP 429 once the limit is reached. Env: `HEADROOM_BUDGET`.
+</ParamField>
+
+<ParamField query="--budget-period" type="hourly | daily | monthly" default="daily">
+  Period the `--budget` limit applies to. `hourly` resets on a rolling hour; `daily` at local midnight; `monthly` on the 1st. Env: `HEADROOM_BUDGET_PERIOD`.
+</ParamField>
+
+<ParamField query="--no-rate-limit" type="flag">
+  Disable per-minute rate limiting entirely.
+</ParamField>
+
+<ParamField query="--rpm" type="integer">
+  Max requests per minute. Default: 60. Has no effect with `--no-rate-limit`. Env: `HEADROOM_RPM`.
+</ParamField>
+
+<ParamField query="--tpm" type="integer">
+  Max tokens per minute. Default: 100,000. Has no effect with `--no-rate-limit`. Env: `HEADROOM_TPM`.
+</ParamField>
+
+---
+
+## Upstream provider routing
+
+<ParamField query="--openai-api-url" type="string">
+  Custom OpenAI API URL for passthrough endpoints. Env: `OPENAI_TARGET_API_URL`.
+</ParamField>
+
+<ParamField query="--anthropic-api-url" type="string">
+  Custom Anthropic API URL for passthrough endpoints. Env: `ANTHROPIC_TARGET_API_URL`.
+</ParamField>
+
+<ParamField query="--gemini-api-url" type="string">
+  Custom Gemini API URL for passthrough endpoints. Env: `GEMINI_TARGET_API_URL`.
+</ParamField>
+
+<ParamField query="--backend" type="string" default="anthropic">
+  API backend: `anthropic` (direct), `bedrock` (AWS), `openrouter`, `anyllm`, or `litellm-<provider>` (e.g. `litellm-vertex`). Env: `HEADROOM_BACKEND`.
+</ParamField>
+
+<ParamField query="--bedrock-api-url" type="string">
+  Custom Bedrock InvokeModel upstream. Point at a re-signing gateway, not raw AWS. Env: `BEDROCK_TARGET_API_URL`.
+</ParamField>
+
+<ParamField query="--region" type="string" default="us-west-2">
+  Cloud region for Bedrock/Vertex/etc. Env: `HEADROOM_REGION`.
+</ParamField>
+
+---
+
+## CCR (Compress-Cache-Retrieve)
+
+<ParamField query="--no-ccr-inject-tool" type="flag">
+  Don't inject the `headroom_retrieve` tool into requests. Use for streaming or non-MCP clients that can't resolve the retrieve tool. Env: `HEADROOM_NO_CCR_INJECT_TOOL`.
+</ParamField>
+
+<ParamField query="--no-ccr-marker" type="flag">
+  Don't add CCR retrieval markers to compressed content. Env: `HEADROOM_NO_CCR_MARKER`.
+</ParamField>
+
+<ParamField query="--lossless" type="flag">
+  No-CCR lossless mode: compress tool outputs with format-native lossless compaction without emitting any CCR retrieval marker or needing the MCP retrieve tool. Env: `HEADROOM_LOSSLESS=1`.
+</ParamField>
+
+<ParamField query="--intercept-tool-results" type="flag">
+  Opt in to tool-result interceptors (AST-grep Read outliner, etc.). Off by default. Requires `headroom-ai[tools]` extras.
+</ParamField>
+
+---
+
+## Read lifecycle
+
+<ParamField query="--no-read-lifecycle" type="flag">
+  Disable Read lifecycle management. By default the proxy compresses stale and superseded Read tool outputs to reclaim context.
+</ParamField>
+
+---
+
+## Code-aware compression
+
+<ParamField query="--code-aware / --no-code-aware" type="flag">
+  Enable or disable AST-based code compression. Requires `pip install headroom-ai[code]`. Default: disabled. Env: `HEADROOM_CODE_AWARE_ENABLED=1`.
+</ParamField>
+
+<ParamField query="--code-graph" type="flag">
+  Index the current working directory and watch for file changes via codebase-memory-mcp. Useful when the proxy is started from a project root.
+</ParamField>
+
+---
+
+## Memory
+
+<ParamField query="--memory" type="flag">
+  Enable persistent memory. Auto-detects the provider (Anthropic, OpenAI, Gemini) and uses the appropriate tool format. By default each workspace gets its own SQLite database.
+</ParamField>
+
+<ParamField query="--memory-storage" type="project | user | global" default="project">
+  Memory partitioning strategy. `project` (default): one DB per resolved workspace. `user`: one DB per `x-headroom-user-id`. `global`: a single shared DB (pre-existing behavior).
+</ParamField>
+
+<ParamField query="--memory-top-k" type="integer" default="10">
+  Number of semantically relevant memories to inject as context (1–100). Env: `HEADROOM_MEMORY_TOP_K`.
+</ParamField>
+
+<ParamField query="--no-memory-tools" type="flag">
+  Disable automatic injection of `memory_save`/`memory_search` tools. Env: `HEADROOM_NO_MEMORY_TOOLS`.
+</ParamField>
+
+<ParamField query="--no-memory-context" type="flag">
+  Disable automatic injection of relevant past memories into the system prompt. Env: `HEADROOM_NO_MEMORY_CONTEXT`.
+</ParamField>
+
+---
+
+## Traffic learning
+
+<ParamField query="--learn" type="flag">
+  Enable live traffic learning: extract error→recovery patterns, environment facts, and user preferences from proxy traffic. Implies `--memory`. Learned patterns are saved to agent-native memory files (`CLAUDE.md`, `.cursor/rules`, `AGENTS.md`).
+</ParamField>
+
+<ParamField query="--no-learn" type="flag">
+  Explicitly disable traffic learning even when `--memory` is set.
+</ParamField>
+
+<ParamField query="--min-evidence" type="integer">
+  Minimum number of times a pattern must be observed before it is persisted. Default: 5. Higher values reduce one-shot noise. Env: `HEADROOM_MIN_EVIDENCE`.
+</ParamField>
+
+---
+
+## Connection tuning
+
+<ParamField query="--limit-concurrency" type="integer" default="1000">
+  Maximum concurrent connections before Uvicorn returns 503. Env: `HEADROOM_LIMIT_CONCURRENCY`.
+</ParamField>
+
+<ParamField query="--max-connections" type="integer" default="500">
+  Maximum upstream HTTP connections. Env: `HEADROOM_MAX_CONNECTIONS`.
+</ParamField>
+
+<ParamField query="--max-keepalive" type="integer" default="100">
+  Maximum upstream keep-alive connections. Env: `HEADROOM_MAX_KEEPALIVE`.
+</ParamField>
+
+<ParamField query="--request-timeout-seconds" type="integer" default="300">
+  Request timeout in seconds. Useful for slow local providers. Env: `HEADROOM_REQUEST_TIMEOUT`.
+</ParamField>
+
+<ParamField query="--retry-max-attempts" type="integer" default="3">
+  Maximum upstream retry attempts for connect/read/5xx failures (1–10). Env: `HEADROOM_RETRY_MAX_ATTEMPTS`.
+</ParamField>
+
+---
+
+## Deployment & security
+
+<ParamField query="--telemetry" type="flag">
+  Opt in to anonymous usage telemetry (off by default). Env: `HEADROOM_TELEMETRY=on`.
+</ParamField>
+
+<ParamField query="--no-telemetry" type="flag">
+  Explicitly disable telemetry. Env: `HEADROOM_TELEMETRY=off`.
+</ParamField>
+
+<ParamField query="--stateless" type="flag">
+  Disable all filesystem writes — run purely in-memory. For containerized, read-only, or load-balanced deployments. Memory, TOIN, and log file persistence are all disabled. Env: `HEADROOM_STATELESS=true`.
+</ParamField>
+
+<Warning>
+  When binding to a non-loopback address (e.g. `--host 0.0.0.0`) without setting `HEADROOM_PROXY_TOKEN`, all `/v1/*` endpoints are unauthenticated. Always set an inbound token in network-exposed deployments.
+</Warning>
+
+---
+
+## Examples
+
+```bash
+# Start with memory and traffic learning on port 9000
+headroom proxy --port 9000 --memory --learn
+
+# AWS Bedrock backend, us-east-1
+headroom proxy --backend bedrock --region us-east-1
+
+# Stateless container deployment
+headroom proxy --stateless --host 0.0.0.0 --workers 4
+
+# Aggressive token savings, cache mode, with budget
+headroom proxy --mode cache --budget 20 --budget-period daily
+
+# OpenRouter backend
+headroom proxy --backend openrouter
+
+# Disable Kompress ML compression (structural compression only)
+headroom proxy --disable-kompress
+
+# Code-aware AST compression
+headroom proxy --code-aware --code-graph
+```

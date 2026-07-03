@@ -1,0 +1,529 @@
+---
+title: "Python SDK Configuration Classes Reference"
+sidebarTitle: "Config"
+description: "Complete reference for HeadroomConfig, HeadroomMode, SmartCrusherConfig, CacheAlignerConfig, and all data model types in the Headroom Python SDK."
+---
+
+Headroom's configuration layer is built from composable Python dataclasses. The top-level `HeadroomConfig` aggregates sub-configs for every subsystem — compression, cache alignment, cache optimization, CCR, and prefix freezing. All fields have sensible defaults; you only need to specify what you want to change.
+
+```python
+from headroom import HeadroomClient, HeadroomConfig, SmartCrusherConfig, OpenAIProvider
+from openai import OpenAI
+
+config = HeadroomConfig(
+    default_mode="optimize",
+    smart_crusher=SmartCrusherConfig(max_items_after_crush=20),
+    output_buffer_tokens=2000,
+)
+
+client = HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    config=config,
+)
+```
+
+---
+
+## HeadroomMode
+
+`HeadroomMode` is a string enum that controls how the pipeline processes requests. It extends `str` so string literals work wherever the enum is expected.
+
+```python
+from headroom import HeadroomMode
+
+HeadroomMode.AUDIT     # "audit"    — observe only, never modify messages
+HeadroomMode.OPTIMIZE  # "optimize" — apply the full compression pipeline
+HeadroomMode.SIMULATE  # "simulate" — dry-run; returned by .simulate()
+```
+
+<ParamField path="AUDIT" type='"audit"'>
+  Pass-through mode. Messages are analyzed for waste signals and metrics are recorded, but nothing is modified. Use this to measure savings before enabling compression.
+</ParamField>
+
+<ParamField path="OPTIMIZE" type='"optimize"'>
+  Full pipeline mode. Messages are compressed by SmartCrusher (JSON), Kompress (text), CacheAligner (prefix), and the provider cache optimizer before being sent.
+</ParamField>
+
+<ParamField path="SIMULATE" type='"simulate"'>
+  Dry-run mode. The pipeline runs completely but no API call is made. Used internally by `client.chat.completions.simulate()` and `client.messages.simulate()`.
+</ParamField>
+
+---
+
+## HeadroomConfig
+
+Top-level configuration for `HeadroomClient`. All fields are optional with production-ready defaults.
+
+```python
+from headroom import HeadroomConfig, HeadroomMode
+
+config = HeadroomConfig(
+    store_url="sqlite:///myapp.db",
+    default_mode=HeadroomMode.OPTIMIZE,
+    output_buffer_tokens=2000,
+)
+```
+
+<ParamField path="store_url" type="str" default='"sqlite:///headroom.db"'>
+  Storage URL for the metrics database. Supports `sqlite:///path` and `jsonl:///path`. When passed via `HeadroomClient(store_url=...)`, that value overrides this field.
+</ParamField>
+
+<ParamField path="default_mode" type="HeadroomMode" default="HeadroomMode.AUDIT">
+  Default operating mode for all requests. Use `HeadroomMode.OPTIMIZE` for production workloads.
+</ParamField>
+
+<ParamField path="model_context_limits" type="dict[str, int]" default="{}">
+  User-supplied overrides for model context windows (in tokens). Takes precedence over the provider's built-in limits. Prefix matching is supported — `"gpt-4"` matches `"gpt-4-turbo"`.
+</ParamField>
+
+<ParamField path="smart_crusher" type="SmartCrusherConfig" default="SmartCrusherConfig()">
+  Configuration for the JSON/array compressor. See [SmartCrusherConfig](#smartcrusherconfig).
+</ParamField>
+
+<ParamField path="cache_aligner" type="CacheAlignerConfig" default="CacheAlignerConfig()">
+  Configuration for the cache-prefix stability detector. See [CacheAlignerConfig](#cachealignerconfig).
+</ParamField>
+
+<ParamField path="cache_optimizer" type="CacheOptimizerConfig" default="CacheOptimizerConfig()">
+  Configuration for provider-specific cache optimization (breakpoints, prefix stabilization). See [CacheOptimizerConfig](#cacheoptimizerconfig).
+</ParamField>
+
+<ParamField path="ccr" type="CCRConfig" default="CCRConfig()">
+  Configuration for Compress-Cache-Retrieve — reversible compression with hash-based retrieval. Enabled by default.
+</ParamField>
+
+<ParamField path="prefix_freeze" type="PrefixFreezeConfig" default="PrefixFreezeConfig()">
+  Configuration for cache-aware prefix freezing. Prevents the pipeline from invalidating already-cached prefixes.
+</ParamField>
+
+<ParamField path="output_buffer_tokens" type="int" default="4000">
+  Tokens reserved for the model's output when computing how much of the input context can be compressed. Increase this for models with long outputs (e.g. code generation).
+</ParamField>
+
+<ParamField path="intercept_tool_results" type="bool" default="false">
+  Enable tool-result interceptors (e.g. `ast-grep` Read outline). Opt-in. Also controllable via the environment variable `HEADROOM_INTERCEPT_ENABLED=1`.
+</ParamField>
+
+<ParamField path="generate_diff_artifact" type="bool" default="false">
+  When `True`, each `TransformResult` includes a `DiffArtifact` with per-transform token deltas. Useful for debugging which transform caused the most savings.
+</ParamField>
+
+<ParamField path="pipeline_extensions" type="list[Any]" default="[]">
+  List of `PipelineExtension` instances to attach to the canonical pipeline lifecycle. Extensions receive `PipelineEvent` objects at each stage.
+</ParamField>
+
+<ParamField path="discover_pipeline_extensions" type="bool" default="true">
+  When `True`, Headroom discovers and loads `PipelineExtension` implementations registered under the `headroom.pipeline_extension` entry-point group.
+</ParamField>
+
+---
+
+## SmartCrusherConfig
+
+Controls the statistical JSON and array compressor. SmartCrusher is the primary tool for reducing large tool outputs — it preserves errors, anomalies, and query-relevant items while dropping redundant entries.
+
+```python
+from headroom import SmartCrusherConfig
+
+config = SmartCrusherConfig(
+    min_tokens_to_crush=200,
+    max_items_after_crush=20,
+    variance_threshold=2.0,
+    preserve_change_points=True,
+)
+```
+
+<ParamField path="enabled" type="bool" default="true">
+  Enable or disable SmartCrusher. When `False`, all JSON/array tool outputs pass through unmodified.
+</ParamField>
+
+<ParamField path="min_items_to_analyze" type="int" default="5">
+  Minimum array length before statistical analysis runs. Arrays shorter than this are left unchanged.
+</ParamField>
+
+<ParamField path="min_tokens_to_crush" type="int" default="200">
+  Only compress a tool output if it exceeds this many tokens. Prevents unnecessary analysis on small payloads.
+</ParamField>
+
+<ParamField path="variance_threshold" type="float" default="2.0">
+  Standard deviations above the mean required to flag a numeric value as an anomaly. Lower values catch more anomalies.
+</ParamField>
+
+<ParamField path="uniqueness_threshold" type="float" default="0.1">
+  Fraction of unique values below which an array is considered "nearly constant". Nearly-constant arrays use stricter deduplication.
+</ParamField>
+
+<ParamField path="similarity_threshold" type="float" default="0.8">
+  String similarity threshold for clustering similar items. Items above this similarity may be grouped and represented by a single representative.
+</ParamField>
+
+<ParamField path="max_items_after_crush" type="int" default="15">
+  Target maximum number of items to keep after compression. The adaptive Kneedle algorithm may keep fewer when information saturation is detected earlier.
+</ParamField>
+
+<ParamField path="preserve_change_points" type="bool" default="true">
+  Keep items at significant data transitions (detected with a fixed 5-item window). Useful for time-series data where inflection points carry information.
+</ParamField>
+
+<ParamField path="factor_out_constants" type="bool" default="false">
+  Disabled — would modify the original JSON schema. Kept for forward compatibility.
+</ParamField>
+
+<ParamField path="include_summaries" type="bool" default="false">
+  Disabled — no AI-generated summary text is inserted. All output items come from the original array.
+</ParamField>
+
+<ParamField path="use_feedback_hints" type="bool" default="true">
+  Use TOIN (Tool Output Intelligence Network) learned patterns to bias compression toward preserving historically-retrieved items.
+</ParamField>
+
+<ParamField path="toin_confidence_threshold" type="float" default="0.3">
+  Minimum TOIN confidence score for a hint to influence compression.
+</ParamField>
+
+<ParamField path="dedup_identical_items" type="bool" default="true">
+  Prevent multiple preservation mechanisms from keeping duplicate copies of identical items.
+</ParamField>
+
+<ParamField path="first_fraction" type="float" default="0.3">
+  Fraction of `max_items_after_crush` reserved for items at the start of the array.
+</ParamField>
+
+<ParamField path="last_fraction" type="float" default="0.15">
+  Fraction of `max_items_after_crush` reserved for items at the end of the array.
+</ParamField>
+
+<ParamField path="lossless_min_savings_ratio" type="float" default="0.15">
+  Minimum byte-savings ratio for the lossless compaction path (CSV/JSON/markdown-kv) to be chosen over the lossy row-drop path. Must stay in lockstep with the Rust core default.
+</ParamField>
+
+<ParamField path="lossless_only" type="bool" default="false">
+  When `True`, lossless tabular compaction still runs but any path that would produce a CCR marker is skipped. Output is always marker-free and byte-recoverable.
+</ParamField>
+
+<ParamField path="relevance" type="RelevanceScorerConfig" default="RelevanceScorerConfig()">
+  Configuration for the relevance scorer that determines which items match the user's query. See [RelevanceScorerConfig](#relevancescorerconfig).
+</ParamField>
+
+---
+
+## CacheAlignerConfig
+
+Controls the cache-prefix stability detector. CacheAligner scans system messages for volatile content (UUIDs, timestamps, JWTs, hex hashes) and logs warnings when instability is detected. **It does not modify messages** — it only emits warnings and cache metrics for observability.
+
+```python
+from headroom import CacheAlignerConfig
+
+config = CacheAlignerConfig(
+    enabled=True,
+    use_dynamic_detector=True,
+    detection_tiers=["regex"],
+    entropy_threshold=0.7,
+    normalize_whitespace=True,
+    collapse_blank_lines=True,
+)
+```
+
+<ParamField path="enabled" type="bool" default="false">
+  Enable the CacheAligner. Disabled by default because prefix stability gains are marginal in most workloads. Enable explicitly when debugging cache-miss issues.
+</ParamField>
+
+<ParamField path="use_dynamic_detector" type="bool" default="true">
+  When `True`, uses the full `DynamicContentDetector` with 15+ structural patterns (UUIDs, API keys, JWTs, timestamps, hex hashes, version numbers, high-entropy strings). When `False`, falls back to legacy date-only regex patterns.
+</ParamField>
+
+<ParamField path="detection_tiers" type='list[Literal["regex", "ner", "semantic"]]' default='["regex"]'>
+  Detection tiers to run (only when `use_dynamic_detector=True`):
+  - `"regex"` — Fast structural/universal patterns (~0 ms). Recommended for production.
+  - `"ner"` — Named Entity Recognition via spaCy (~5–10 ms). Optional.
+  - `"semantic"` — Embedding similarity (~20–50 ms). Optional.
+</ParamField>
+
+<ParamField path="extra_dynamic_labels" type="list[str]" default="[]">
+  Additional key names that hint their values are dynamic. For example, adding `"session"` will detect `"session: abc123"` and flag `"abc123"` as volatile.
+</ParamField>
+
+<ParamField path="entropy_threshold" type="float" default="0.7">
+  Entropy threshold (0–1) for identifying random-looking strings. Higher values are more selective (only very random strings like UUIDs). Lower values are more aggressive.
+</ParamField>
+
+<ParamField path="normalize_whitespace" type="bool" default="true">
+  Normalize whitespace in system messages to improve prefix stability. **Caution:** may break code blocks with significant indentation or ASCII art.
+</ParamField>
+
+<ParamField path="collapse_blank_lines" type="bool" default="true">
+  Collapse consecutive blank lines to single blank lines.
+</ParamField>
+
+<ParamField path="dynamic_tail_separator" type="str" default='"\n\n---\n[Dynamic Context]\n"'>
+  Separator marking where dynamic content begins in the system message. Content before this separator is the stable cacheable prefix; content after is dynamic.
+</ParamField>
+
+---
+
+## CacheOptimizerConfig
+
+Controls provider-specific cache optimization — Anthropic `cache_control` breakpoints, OpenAI prefix stabilization, and Google `CachedContent` API lifecycle management.
+
+<ParamField path="enabled" type="bool" default="true">
+  Enable provider-specific cache optimization. Auto-detects the provider from the `HeadroomClient` provider instance.
+</ParamField>
+
+<ParamField path="auto_detect_provider" type="bool" default="true">
+  Automatically select the cache optimizer implementation based on the provider name.
+</ParamField>
+
+<ParamField path="min_cacheable_tokens" type="int" default="1024">
+  Minimum token count for a prefix to be considered cacheable. Provider may enforce a higher minimum.
+</ParamField>
+
+<ParamField path="enable_semantic_cache" type="bool" default="false">
+  Enable query-level semantic caching within the optimizer layer. Requires the semantic cache extra.
+</ParamField>
+
+<ParamField path="semantic_cache_similarity" type="float" default="0.95">
+  Minimum cosine similarity for a semantic cache hit.
+</ParamField>
+
+<ParamField path="semantic_cache_max_entries" type="int" default="1000">
+  Maximum number of entries in the semantic cache.
+</ParamField>
+
+<ParamField path="semantic_cache_ttl_seconds" type="int" default="300">
+  Time-to-live for semantic cache entries in seconds.
+</ParamField>
+
+---
+
+## RelevanceScorerConfig
+
+Controls how SmartCrusher scores items by relevance to the user's query. Available scoring tiers are BM25 (zero dependencies), embedding-based (requires `headroom-ai[relevance]`), and hybrid (recommended).
+
+```python
+from headroom import RelevanceScorerConfig
+
+config = RelevanceScorerConfig(
+    tier="hybrid",
+    relevance_threshold=0.25,
+    hybrid_alpha=0.5,
+    adaptive_alpha=True,
+)
+```
+
+<ParamField path="tier" type='"bm25" | "embedding" | "hybrid"' default='"hybrid"'>
+  Scoring method. `"hybrid"` combines BM25 keyword matching with semantic embeddings and is the recommended default. Falls back to BM25 if `sentence-transformers` is not installed.
+</ParamField>
+
+<ParamField path="bm25_k1" type="float" default="1.5">
+  BM25 term-frequency saturation parameter.
+</ParamField>
+
+<ParamField path="bm25_b" type="float" default="0.75">
+  BM25 length normalization parameter.
+</ParamField>
+
+<ParamField path="embedding_model" type="str" default="ML_MODEL_DEFAULTS.sentence_transformer">
+  HuggingFace model name for the embedding scorer. Default is the Headroom-recommended sentence transformer.
+</ParamField>
+
+<ParamField path="hybrid_alpha" type="float" default="0.5">
+  BM25 weight in the hybrid scorer. `1 - hybrid_alpha` is the embedding weight. `0.5` = equal weight.
+</ParamField>
+
+<ParamField path="adaptive_alpha" type="bool" default="true">
+  Dynamically adjust `hybrid_alpha` based on query type (keyword-heavy vs. semantic).
+</ParamField>
+
+<ParamField path="relevance_threshold" type="float" default="0.25">
+  Minimum relevance score for an item to be considered relevant and kept. Lower = safer (keeps more); higher = more aggressive.
+</ParamField>
+
+---
+
+## Data Model Types
+
+### Block
+
+Atomic unit of context analysis. Each message is parsed into one or more `Block` objects.
+
+<ResponseField name="kind" type='Literal["system", "user", "assistant", "tool_call", "tool_result", "rag", "unknown"]'>
+  The semantic type of this block.
+</ResponseField>
+
+<ResponseField name="text" type="str">
+  Text content of the block.
+</ResponseField>
+
+<ResponseField name="tokens_est" type="int">
+  Estimated token count for this block.
+</ResponseField>
+
+<ResponseField name="content_hash" type="str">
+  Short hash of the block content for deduplication.
+</ResponseField>
+
+<ResponseField name="source_index" type="int">
+  Position (index) of the originating message in the messages list.
+</ResponseField>
+
+<ResponseField name="flags" type="dict[str, Any]">
+  Arbitrary flags set by analyzers (e.g. `{"is_error": True}`, `{"is_anomaly": True}`).
+</ResponseField>
+
+---
+
+### RequestMetrics
+
+Comprehensive per-request metrics stored in the database after each call.
+
+<ResponseField name="request_id" type="str">
+  Unique identifier for this request.
+</ResponseField>
+
+<ResponseField name="timestamp" type="datetime">
+  UTC timestamp when the request was processed.
+</ResponseField>
+
+<ResponseField name="model" type="str">
+  Model name used for this request.
+</ResponseField>
+
+<ResponseField name="stream" type="bool">
+  Whether the response was streamed.
+</ResponseField>
+
+<ResponseField name="mode" type="str">
+  Operating mode: `"audit"`, `"optimize"`, or `"simulate"`.
+</ResponseField>
+
+<ResponseField name="tokens_input_before" type="int">
+  Input token count before compression.
+</ResponseField>
+
+<ResponseField name="tokens_input_after" type="int">
+  Input token count after compression.
+</ResponseField>
+
+<ResponseField name="tokens_output" type="int | None">
+  Output tokens from the model response. `None` for streaming requests (unknown at request time).
+</ResponseField>
+
+<ResponseField name="block_breakdown" type="dict[str, int]">
+  Token counts by block type (system, user, assistant, tool_result, etc.).
+</ResponseField>
+
+<ResponseField name="waste_signals" type="dict[str, int]">
+  Detected waste by category. See `WasteSignals.to_dict()` for key names.
+</ResponseField>
+
+<ResponseField name="stable_prefix_hash" type="str">
+  16-character hash of the stable cache prefix. Compare across requests to detect cache misses.
+</ResponseField>
+
+<ResponseField name="cache_alignment_score" type="float">
+  Score from 0.0 to 1.0 indicating how cache-friendly the prefix is.
+</ResponseField>
+
+<ResponseField name="cache_optimizer_used" type="str | None">
+  Name of the cache optimizer that ran (e.g. `"anthropic-cache-optimizer"`), or `None`.
+</ResponseField>
+
+<ResponseField name="cache_optimizer_strategy" type="str | None">
+  Strategy name used by the cache optimizer (e.g. `"explicit_breakpoints"`).
+</ResponseField>
+
+<ResponseField name="cacheable_tokens" type="int">
+  Number of tokens eligible for provider-side caching.
+</ResponseField>
+
+<ResponseField name="breakpoints_inserted" type="int">
+  Number of `cache_control` breakpoints inserted (Anthropic only).
+</ResponseField>
+
+<ResponseField name="estimated_cache_hit" type="bool">
+  Whether the prefix hash matched the previous request, suggesting a cache hit.
+</ResponseField>
+
+<ResponseField name="estimated_savings_percent" type="float">
+  Estimated percentage savings if the provider cache was hit.
+</ResponseField>
+
+<ResponseField name="semantic_cache_hit" type="bool">
+  Whether a semantic cache hit was returned instead of calling the API.
+</ResponseField>
+
+<ResponseField name="transforms_applied" type="list[str]">
+  Names of all transforms that ran for this request.
+</ResponseField>
+
+<ResponseField name="messages_hash" type="str">
+  Hash of the original messages for change detection.
+</ResponseField>
+
+<ResponseField name="error" type="str | None">
+  Error message if the request failed, otherwise `None`.
+</ResponseField>
+
+---
+
+### TransformResult
+
+Output of a pipeline or individual transform operation.
+
+<ResponseField name="messages" type="list[dict[str, Any]]">
+  Messages after the transform was applied.
+</ResponseField>
+
+<ResponseField name="tokens_before" type="int">
+  Token count before this transform.
+</ResponseField>
+
+<ResponseField name="tokens_after" type="int">
+  Token count after this transform.
+</ResponseField>
+
+<ResponseField name="transforms_applied" type="list[str]">
+  Names of every sub-transform that ran.
+</ResponseField>
+
+<ResponseField name="markers_inserted" type="list[str]">
+  CCR retrieval markers that were injected into messages.
+</ResponseField>
+
+<ResponseField name="warnings" type="list[str]">
+  Non-fatal warnings emitted during the transform (e.g. detected volatile content in the prefix).
+</ResponseField>
+
+<ResponseField name="diff_artifact" type="DiffArtifact | None">
+  Per-transform diff details. Populated only when `HeadroomConfig.generate_diff_artifact=True`.
+</ResponseField>
+
+<ResponseField name="cache_metrics" type="CachePrefixMetrics | None">
+  Cache prefix stability metrics from CacheAligner.
+</ResponseField>
+
+<ResponseField name="timing" type="dict[str, float]">
+  Wall-clock time in milliseconds per transform name.
+</ResponseField>
+
+<ResponseField name="transforms_summary" type="dict[str, int]">
+  Property — counted summary of `transforms_applied`. Example: `{"router:tool_result:json": 4}`.
+</ResponseField>
+
+---
+
+### SimulationResult
+
+Returned by `client.chat.completions.simulate()` and `client.messages.simulate()`. Contains projected compression metrics without any API call.
+
+<ResponseField name="tokens_before" type="int">Token count before compression.</ResponseField>
+<ResponseField name="tokens_after" type="int">Projected token count after compression.</ResponseField>
+<ResponseField name="tokens_saved" type="int">`tokens_before - tokens_after`.</ResponseField>
+<ResponseField name="transforms" type="list[str]">Transforms that would be applied.</ResponseField>
+<ResponseField name="estimated_savings" type="str">Human-readable cost estimate per request, e.g. `"$0.0042 per request"`.</ResponseField>
+<ResponseField name="messages_optimized" type="list[dict[str, Any]]">The projected compressed messages.</ResponseField>
+<ResponseField name="block_breakdown" type="dict[str, int]">Token counts by block type.</ResponseField>
+<ResponseField name="waste_signals" type="dict[str, int]">Waste by category.</ResponseField>
+<ResponseField name="stable_prefix_hash" type="str">16-character prefix hash after optimization.</ResponseField>
+<ResponseField name="cache_alignment_score" type="float">Cache-friendliness score (0–1).</ResponseField>

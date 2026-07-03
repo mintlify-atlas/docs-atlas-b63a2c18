@@ -1,0 +1,295 @@
+---
+title: "Persistent Cross-Conversation Memory for LLM Apps"
+sidebarTitle: "Memory"
+description: "Hierarchical temporal memory for LLM applications. Store, scope, and search facts across conversations — User, Session, Agent, and Turn levels."
+---
+
+LLMs forget everything the moment a conversation ends. Headroom's persistent memory layer solves this by extracting key facts inline during each response, persisting them with vector and full-text indexes, and injecting the most relevant ones automatically on the next turn — turning thousands of tokens of replayed history into a compact, semantically-searched memory store.
+
+## Install
+
+```bash
+pip install "headroom-ai[memory]"
+```
+
+## Quick Start
+
+The fastest path is `with_memory()`, which wraps any OpenAI-compatible client in a single line. Memory extraction happens **inline** as part of the LLM response — no extra API calls, no extra latency.
+
+```python
+from openai import OpenAI
+from headroom import with_memory
+
+# One line — that's it
+client = with_memory(OpenAI(), user_id="alice")
+
+# Use exactly like normal
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "I prefer Python for backend work"}]
+)
+# Memory extracted INLINE — zero extra latency
+
+# Later, in a new conversation...
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What language should I use?"}]
+)
+# Response uses the Python preference from memory
+```
+
+## How It Works
+
+The `with_memory()` wrapper intercepts every chat completion call and runs six steps transparently:
+
+<Steps>
+  <Step title="Inject">
+    Semantic search finds relevant memories and prepends them to the user message.
+  </Step>
+  <Step title="Instruct">
+    Adds a memory extraction instruction to the system prompt.
+  </Step>
+  <Step title="Call">
+    Forwards the (augmented) request to the LLM provider.
+  </Step>
+  <Step title="Parse">
+    Extracts the `<memory>` block from the model's response.
+  </Step>
+  <Step title="Store">
+    Saves the extracted facts with embeddings, a vector index, and a full-text search index.
+  </Step>
+  <Step title="Return">
+    Strips the memory block and returns a clean response to your application.
+  </Step>
+</Steps>
+
+## Hierarchical Scoping
+
+Memories exist at four scope levels, from broadest to narrowest. Facts stored at a broader scope are automatically visible to narrower scopes — a language preference saved at the **User** level is recalled in every future session.
+
+| Scope | Persists Across | Use Case |
+|-------|-----------------|----------|
+| **User** | All sessions, all time | Long-term preferences, identity |
+| **Session** | Current session only | Current task context |
+| **Agent** | Current agent in session | Agent-specific context |
+| **Turn** | Single turn only | Ephemeral working memory |
+
+```python
+from openai import OpenAI
+from headroom import with_memory
+
+# Session 1: Morning
+client1 = with_memory(
+    OpenAI(),
+    user_id="bob",
+    session_id="morning-session",
+)
+response = client1.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "I prefer Go for performance-critical code"}]
+)
+# Memory stored at USER level (persists across sessions)
+
+# Session 2: Afternoon (different session, same user)
+client2 = with_memory(
+    OpenAI(),
+    user_id="bob",
+    session_id="afternoon-session",
+)
+response = client2.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What language for my new microservice?"}]
+)
+# Recalls Go preference from morning session
+```
+
+## Memory Backends
+
+<CardGroup cols={2}>
+  <Card title="local (default)" icon="database">
+    SQLite + HNSW + InMemoryGraph. Zero setup — no Docker, no external services. Recommended for development and single-user deployments.
+  </Card>
+  <Card title="qdrant-neo4j" icon="server">
+    Qdrant vector store + Neo4j graph store. Production-grade, horizontally scalable. Requires Docker services.
+  </Card>
+</CardGroup>
+
+<Tabs>
+  <Tab title="Local (default)">
+    ```python
+    from headroom.memory import Memory
+
+    # No setup required — works out of the box
+    memory = Memory()
+
+    await memory.save("User prefers dark mode and uses Python", user_id="alice")
+
+    results = await memory.search("What programming language?", user_id="alice")
+    for r in results:
+        print(r.content, r.score)
+    ```
+  </Tab>
+  <Tab title="Qdrant + Neo4j (production)">
+    ```bash
+    # Start services first
+    docker compose up -d qdrant neo4j
+    ```
+    ```python
+    from headroom.memory import Memory
+
+    # Same API, production-grade backends
+    memory = Memory(backend="qdrant-neo4j")
+
+    await memory.save("User works at Netflix", user_id="alice")
+    ```
+  </Tab>
+</Tabs>
+
+## MemoryConfig Parameters
+
+For fine-grained control, pass a `MemoryConfig` object directly:
+
+```python
+from headroom.memory import MemoryConfig, EmbedderBackend, VectorBackend
+
+config = MemoryConfig(
+    db_path="memory.db",           # SQLite database path
+    vector_backend=VectorBackend.AUTO,  # AUTO selects SQLITE_VEC if available, else HNSW
+    vector_dimension=384,          # Embedding vector size
+    hnsw_ef_construction=200,      # HNSW build-time accuracy
+    hnsw_m=16,                     # HNSW connections per node
+    hnsw_ef_search=50,             # HNSW search-time accuracy
+    cache_enabled=True,
+    cache_max_size=1000,
+    embedder_backend=EmbedderBackend.ONNX,   # Fast, free, private (~30 MB)
+    embedder_model="BAAI/bge-small-en-v1.5",
+)
+```
+
+### Embedder backends
+
+| Backend | Notes |
+|---------|-------|
+| `EmbedderBackend.ONNX` | Recommended — fast, no torch, ~30 MB int8-quantized |
+| `EmbedderBackend.LOCAL` | sentence-transformers (requires PyTorch ~2 GB) |
+| `EmbedderBackend.OPENAI` | Higher quality, costs money; needs `openai_api_key` |
+| `EmbedderBackend.OLLAMA` | Local Ollama server; needs `ollama_base_url` |
+
+<Tip>
+  On Apple Silicon you can offload embedding to the GPU with `pip install "headroom-ai[pytorch-mps]"` and `export HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`. The embedder serializes MPS calls internally — nothing else to configure.
+</Tip>
+
+## `with_memory()` vs `Memory()` Directly
+
+<CardGroup cols={2}>
+  <Card title="with_memory()" icon="wand-magic-sparkles">
+    Wraps an existing LLM client. Memory extraction is automatic and inline — the model writes facts in its response and the wrapper strips them before returning. Ideal when you already use the OpenAI SDK.
+  </Card>
+  <Card title="Memory()" icon="gear">
+    Standalone async API — `save()`, `search()`, `clear()`. Use this when you want full control, or when your stack doesn't use OpenAI-compatible clients.
+  </Card>
+</CardGroup>
+
+## Async API
+
+`Memory` is fully async:
+
+```python
+from headroom.memory import Memory
+
+memory = Memory()
+
+# Save a fact
+await memory.save(
+    "User prefers dark mode and uses Python",
+    user_id="alice",
+)
+
+# Semantic search
+results = await memory.search(
+    "What programming language?",
+    user_id="alice",
+)
+for r in results:
+    print(r.content, r.score)
+```
+
+The `with_memory()` wrapper also exposes a `.memory` attribute for direct access:
+
+```python
+client = with_memory(OpenAI(), user_id="alice")
+
+# Semantic search
+results = client.memory.search("python preferences", top_k=5)
+
+# Add a memory manually
+client.memory.add("User is a senior engineer", importance=0.9)
+
+# Get all memories for this user
+all_memories = client.memory.get_all()
+
+# Stats
+stats = client.memory.stats()
+print(f"Total memories: {stats['total']}")
+print(f"By category: {stats['categories']}")
+```
+
+## Cross-Agent Memory
+
+The memory store is shared across Claude, Codex, and Gemini. A fact learned in one agent is automatically available to the others — agent provenance is tracked and duplicates are deduplicated.
+
+```python
+from headroom.memory import Memory
+
+memory = Memory()
+
+# Claude Code stores a fact
+await memory.save(
+    "Project uses uv, not pip",
+    user_id="team",
+    agent_id="claude",
+)
+
+# Codex recalls it in a different session
+results = await memory.search(
+    "package manager",
+    user_id="team",
+    agent_id="codex",
+)
+# Returns: "Project uses uv, not pip"
+```
+
+<Note>
+  For compressed context passing between agents in a single workflow (rather than persistent long-term facts), use `SharedContext` instead. See [Shared Context](/features/shared-context) for details.
+</Note>
+
+## Provider Compatibility
+
+`with_memory()` works with any OpenAI-compatible client:
+
+```python
+from openai import OpenAI
+from headroom import with_memory
+
+# Standard OpenAI
+client = with_memory(OpenAI(), user_id="alice")
+
+# Azure OpenAI
+client = with_memory(
+    OpenAI(base_url="https://your-resource.openai.azure.com/..."),
+    user_id="alice",
+)
+
+# Groq
+from groq import Groq
+client = with_memory(Groq(), user_id="alice")
+```
+
+## Performance
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| Memory injection | &lt;50 ms | Local embeddings + HNSW/SQLITE_VEC search |
+| Memory extraction | +50–100 tokens | Inline in the LLM response |
+| Memory storage | &lt;10 ms | SQLite + vector + FTS5 indexing |
+| Cache hit | &lt;1 ms | LRU cache lookup |

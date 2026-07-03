@@ -1,0 +1,419 @@
+---
+title: "Configure Headroom SDK, Proxy, and Environment"
+sidebarTitle: "Configuration"
+description: "All configuration options for the Headroom Python and TypeScript SDKs, proxy server, environment variables, and per-request overrides."
+---
+
+Headroom can be configured via the SDK constructor, the `headroom proxy` command line, environment variables, or per-request overrides. Settings are applied in this order — later entries override earlier ones: built-in defaults → environment variables → SDK constructor arguments → per-request overrides.
+
+## SDK Modes
+
+These modes apply to SDK usage via `HeadroomClient(default_mode=...)` or as a per-request override. They are **not** the same axis as the proxy `--mode` flag — each controls a different layer of the stack.
+
+| Mode | Behavior | Use case |
+|------|----------|----------|
+| `audit` | Observes and logs; no modifications | Production monitoring, baseline measurement |
+| `optimize` | Applies safe, deterministic transforms | Production optimization |
+| `simulate` | Returns the transform plan without making an API call | Testing, cost estimation |
+
+<Note>
+**Proxy `--mode` is a separate axis.** `headroom proxy --mode token` maximizes compression by rewriting prior turns. `--mode cache` freezes prior turns to maximize provider prefix-cache hit rates. The proxy does not accept `audit`, `optimize`, or `simulate`.
+</Note>
+
+## SDK Configuration
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from headroom import HeadroomClient, OpenAIProvider
+    from openai import OpenAI
+
+    client = HeadroomClient(
+        original_client=OpenAI(),
+        provider=OpenAIProvider(),
+
+        # Mode: "audit" (observe only) or "optimize" (apply transforms)
+        default_mode="optimize",
+
+        # Enable provider-specific cache optimization
+        enable_cache_optimizer=True,
+
+        # Enable query-level semantic caching
+        enable_semantic_cache=False,
+
+        # Override default context limits per model
+        model_context_limits={
+            "gpt-4o": 128000,
+            "gpt-4o-mini": 128000,
+        },
+
+        # Database location (defaults to temp directory)
+        # store_url="sqlite:////absolute/path/to/headroom.db",
+    )
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```ts
+    import { HeadroomClient } from 'headroom-ai';
+
+    // Reads HEADROOM_BASE_URL and HEADROOM_API_KEY automatically
+    const client = new HeadroomClient();
+
+    // Or configure explicitly
+    const explicit = new HeadroomClient({
+      baseUrl: 'http://localhost:8787',
+      apiKey: 'your-api-key',
+      timeout: 30_000,
+      fallback: true,
+      retries: 2,
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### Python `HeadroomClient` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `original_client` | SDK client | required | The underlying provider SDK client (`OpenAI()`, `Anthropic()`, etc.) |
+| `provider` | Provider | required | Provider adapter (`OpenAIProvider()`, `AnthropicProvider()`, etc.) |
+| `default_mode` | str | `"audit"` | Default operating mode: `audit`, `optimize`, or `simulate` |
+| `enable_cache_optimizer` | bool | `True` | Enable provider-specific cache optimization |
+| `enable_semantic_cache` | bool | `False` | Enable query-level semantic caching |
+| `model_context_limits` | dict | `{}` | Per-model context window overrides |
+| `store_url` | str | temp SQLite | Database URL for the compression store |
+
+### TypeScript `HeadroomClient` options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `baseUrl` | string | `http://localhost:8787` | Headroom proxy base URL (also reads `HEADROOM_BASE_URL`) |
+| `apiKey` | string | — | Optional API key for authenticated endpoints (also reads `HEADROOM_API_KEY`) |
+| `timeout` | number | 30000 | Request timeout in milliseconds |
+| `fallback` | boolean | `true` | Pass through unmodified if compression fails |
+| `retries` | number | 2 | Number of retry attempts |
+
+## `HeadroomConfig` Dataclass Fields
+
+`HeadroomConfig` is the main configuration object passed to `HeadroomClient` in Python. All fields have defaults and can be overridden selectively.
+
+```python
+from headroom.config import HeadroomConfig, HeadroomMode
+
+config = HeadroomConfig(
+    store_url="sqlite:///headroom.db",
+    default_mode=HeadroomMode.OPTIMIZE,
+    output_buffer_tokens=4000,
+    intercept_tool_results=False,
+    generate_diff_artifact=False,
+    discover_pipeline_extensions=True,
+)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `store_url` | str | `"sqlite:///headroom.db"` | SQLAlchemy URL for the compression store |
+| `default_mode` | `HeadroomMode` | `AUDIT` | Default operating mode |
+| `model_context_limits` | dict | `{}` | User overrides for model context limits |
+| `output_buffer_tokens` | int | `4000` | Output buffer reserved for the model's response |
+| `intercept_tool_results` | bool | `False` | Opt in to tool-result interceptors (ast-grep Read outliner, etc.) |
+| `generate_diff_artifact` | bool | `False` | Opt-in per-transform diff artifact generation for debugging |
+| `discover_pipeline_extensions` | bool | `True` | Auto-discover registered pipeline extensions |
+| `smart_crusher` | `SmartCrusherConfig` | see below | JSON compression settings |
+| `cache_aligner` | `CacheAlignerConfig` | see below | Prefix stabilization settings |
+| `cache_optimizer` | `CacheOptimizerConfig` | enabled | Provider-specific cache optimization |
+| `ccr` | `CCRConfig` | enabled | Compress-Cache-Retrieve settings |
+| `prefix_freeze` | `PrefixFreezeConfig` | enabled | Cache-aware prefix freezing |
+
+## `SmartCrusherConfig` Fields
+
+SmartCrusher is Headroom's universal JSON array compressor. It uses statistical analysis to intelligently select which items to keep while preserving the original JSON schema.
+
+```python
+from headroom.config import SmartCrusherConfig
+
+config = SmartCrusherConfig(
+    enabled=True,
+    min_items_to_analyze=5,
+    min_tokens_to_crush=200,
+    max_items_after_crush=15,
+    variance_threshold=2.0,
+    uniqueness_threshold=0.1,
+    similarity_threshold=0.8,
+    first_fraction=0.3,
+    last_fraction=0.15,
+    preserve_change_points=True,
+    factor_out_constants=False,
+    include_summaries=False,
+    lossless_only=False,
+)
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `True` | Enable SmartCrusher (sole tool-output compressor by default) |
+| `min_items_to_analyze` | `5` | Don't analyze arrays smaller than this |
+| `min_tokens_to_crush` | `200` | Only compress content above this token threshold |
+| `max_items_after_crush` | `15` | Target maximum items in output |
+| `variance_threshold` | `2.0` | Standard deviations for change-point detection |
+| `uniqueness_threshold` | `0.1` | Below this = nearly constant (skip statistical analysis) |
+| `similarity_threshold` | `0.8` | Similarity threshold for clustering similar strings |
+| `first_fraction` | `0.3` | Fraction of K slots allocated to start of array |
+| `last_fraction` | `0.15` | Fraction of K slots allocated to end of array |
+| `preserve_change_points` | `True` | Always keep items at statistical change points |
+| `factor_out_constants` | `False` | Disabled — preserves original JSON schema |
+| `include_summaries` | `False` | Disabled — no generated text injected |
+| `lossless_only` | `False` | When `True`, never emit CCR markers; only lossless compaction |
+| `lossless_min_savings_ratio` | `0.15` | Minimum byte savings for lossless path to win over lossy |
+| `use_feedback_hints` | `True` | Use TOIN learned patterns to adjust compression |
+| `toin_confidence_threshold` | `0.3` | Minimum TOIN confidence required to apply recommendations |
+
+## `CacheAlignerConfig` Fields
+
+CacheAligner stabilizes system-prompt prefixes so provider KV caches actually hit on repeated turns. It extracts dynamic content (dates, UUIDs, tokens) and moves it to a trailing section after a stable prefix.
+
+```python
+from headroom.config import CacheAlignerConfig
+
+config = CacheAlignerConfig(
+    enabled=True,
+    use_dynamic_detector=True,
+    detection_tiers=["regex"],
+    entropy_threshold=0.7,
+    normalize_whitespace=True,
+    collapse_blank_lines=True,
+    dynamic_tail_separator="\n\n---\n[Dynamic Context]\n",
+)
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `False` | Disabled by default — prefix-stability gains are marginal in most setups |
+| `use_dynamic_detector` | `True` | Use full `DynamicContentDetector` (15+ patterns) instead of legacy date regex |
+| `detection_tiers` | `["regex"]` | Detection tiers: `regex` (fast, ~0ms), `ner` (spaCy, ~5–10ms), `semantic` (~20–50ms) |
+| `extra_dynamic_labels` | `[]` | Extra KEY names that hint the VALUE is dynamic (e.g. `"session"`) |
+| `entropy_threshold` | `0.7` | Entropy threshold for random-string detection (0–1; higher = more selective) |
+| `normalize_whitespace` | `True` | Normalize whitespace in system prompts |
+| `collapse_blank_lines` | `True` | Collapse multiple blank lines |
+| `dynamic_tail_separator` | `"\n\n---\n[Dynamic Context]\n"` | Separator marking where dynamic content begins |
+| `date_patterns` | (4 patterns) | Legacy date regex patterns used when `use_dynamic_detector=False` |
+
+<Note>
+CacheAligner is applied **only to system messages** — never to user, assistant, or tool content. Code blocks with significant indentation or ASCII art may be affected by whitespace normalization; test before enabling in production.
+</Note>
+
+## Proxy `--mode` Flag
+
+The proxy's `--mode` flag is a separate optimization axis from SDK modes:
+
+<CardGroup cols={2}>
+  <Card title="token mode (default)" icon="compress">
+    Prioritize compression. Prior turns may be rewritten for maximum token savings.
+
+    ```bash
+    headroom proxy --mode token
+    ```
+  </Card>
+  <Card title="cache mode" icon="database">
+    Freeze prior turns to maximize provider prefix-cache hit rate.
+
+    ```bash
+    headroom proxy --mode cache
+    ```
+  </Card>
+</CardGroup>
+
+Legacy aliases `token_mode`, `token_savings`, `token_headroom`, `cache_mode`, and `cost_savings` are still accepted. Set via `HEADROOM_MODE`.
+
+## Per-Request Overrides
+
+Override configuration on individual requests without changing global settings:
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[...],
+
+        # Override mode for this request only
+        headroom_mode="audit",
+
+        # Reserve more tokens for output
+        headroom_output_buffer_tokens=8000,
+
+        # Keep last N turns uncompressed
+        headroom_keep_turns=5,
+
+        # Skip compression for specific tools
+        headroom_tool_profiles={
+            "important_tool": {"skip_compression": True},
+            "search_tool": {"max_items_after_crush": 25},
+        },
+    )
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```ts
+    import { compress } from 'headroom-ai';
+
+    const result = await compress(messages, {
+      model: 'gpt-4o',
+      tokenBudget: 100_000,
+      timeout: 15_000,
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Environment Variables
+
+### Core proxy settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_HOST` | `127.0.0.1` | Proxy bind host |
+| `HEADROOM_PORT` | `8787` | Proxy bind port |
+| `HEADROOM_MODE` | `token` | Proxy optimization mode: `token` or `cache` |
+| `HEADROOM_WORKERS` | `1` | Uvicorn worker count |
+| `HEADROOM_BUDGET` | — | Daily budget limit in USD |
+| `HEADROOM_STATELESS` | `false` | Set to `true` to disable all filesystem writes |
+| `HEADROOM_REQUEST_TIMEOUT` | `300` | Request timeout in seconds |
+
+### Output token reduction
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_OUTPUT_SHAPER` | off | Set to `1` to enable verbosity steering and effort routing (output token reduction) |
+| `HEADROOM_OUTPUT_HOLDOUT` | — | Fraction of conversations left unshaped as a measured control group (e.g. `0.1` for 10%). Enables measured rather than estimated output savings. |
+
+### Tool and context routing
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_CONTEXT_TOOL` | `rtk` | CLI context tool for `headroom wrap`: `rtk` or `lean-ctx` |
+| `HEADROOM_RTK_GAIN_SCOPE` | global | RTK savings scope: `global` or `project` |
+| `HEADROOM_PROTECT_TOOL_RESULTS` | — | Comma-separated tool names whose results are never lossy-compressed |
+
+### TLS and security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_TLS_STRICT` | `1` | Set to `0` to relax OpenSSL's RFC 5280 strict CA-constraint check (required behind Zscaler/Netskope on Python 3.13+). Chain validation, hostname, and expiry checks remain enabled. |
+| `HEADROOM_PROXY_TOKEN` | — | Require this bearer token for non-loopback callers |
+
+### Telemetry and updates
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_TELEMETRY` | `off` | Set to `on` to opt in to anonymous aggregate telemetry |
+| `HEADROOM_UPDATE_CHECK` | on | Set to `off` to disable the daily PyPI update check (also skipped in `--stateless` and CI) |
+
+### Embedder runtime
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_EMBEDDER_RUNTIME` | auto | Set to `pytorch_mps` to run the memory embedder on Apple GPU (MPS). Requires `[pytorch-mps]` extra. |
+| `HEADROOM_BINARIES_OFFLINE` | off | Set to `1` to disable all binary downloads (for air-gapped installs) |
+
+### Filesystem roots
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADROOM_CONFIG_DIR` | `~/.headroom/config` | Read-mostly config root. Derives `models.json` and plugin config paths. |
+| `HEADROOM_WORKSPACE_DIR` | `~/.headroom` | Read-write state root. Derives savings, memory DB, logs, TOIN, and more. |
+| `HEADROOM_BASE_URL` | `http://localhost:8787` | TypeScript SDK: proxy base URL |
+| `HEADROOM_API_KEY` | — | TypeScript SDK: optional API key for authenticated endpoints |
+
+<Tip>
+Set `HEADROOM_CONTEXT_TOOL=lean-ctx` before `headroom wrap` to use [lean-ctx](https://github.com/yvgude/lean-ctx) for CLI context filtering instead of RTK. Both tools are supported; RTK is the default.
+</Tip>
+
+## Provider-Specific Settings
+
+<Tabs>
+  <Tab title="OpenAI">
+    ```python
+    from headroom import OpenAIProvider
+
+    provider = OpenAIProvider(
+        enable_prefix_caching=True,
+    )
+    ```
+  </Tab>
+  <Tab title="Anthropic">
+    ```python
+    from headroom import AnthropicProvider
+
+    provider = AnthropicProvider(
+        enable_cache_control=True,
+    )
+    ```
+  </Tab>
+  <Tab title="Google">
+    ```python
+    from headroom.providers import GoogleProvider
+
+    provider = GoogleProvider(
+        enable_context_caching=True,
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Custom Model Configuration
+
+Configure context limits and pricing for new or fine-tuned models. Save as `~/.headroom/config/models.json` or point `HEADROOM_MODEL_LIMITS` at a JSON string or file path:
+
+```json
+{
+  "anthropic": {
+    "context_limits": {
+      "claude-4-opus-20250301": 200000,
+      "claude-custom-finetune": 128000
+    },
+    "pricing": {
+      "claude-4-opus-20250301": {
+        "input": 15.00,
+        "output": 75.00,
+        "cached_input": 1.50
+      }
+    }
+  },
+  "openai": {
+    "context_limits": {
+      "gpt-5": 256000,
+      "ft:gpt-4o:my-org": 128000
+    }
+  }
+}
+```
+
+Unknown models are automatically inferred from naming patterns:
+
+| Pattern | Inferred context | Tier |
+|---------|-----------------|------|
+| `*opus*` | 200K | Opus pricing |
+| `*sonnet*` | 200K | Sonnet pricing |
+| `*haiku*` | 200K | Haiku pricing |
+| `gpt-4o*` | 128K | GPT-4o pricing |
+| `o1*`, `o3*` | 200K | Reasoning model pricing |
+
+## Configuration Precedence
+
+Settings are applied in this order (later overrides earlier):
+
+<Steps>
+  <Step title="Built-in defaults">
+    Hardcoded values from `HeadroomConfig` and `SmartCrusherConfig` dataclass definitions.
+  </Step>
+  <Step title="Environment variables">
+    `HEADROOM_*` variables read at process start. Applied before any SDK constructor call.
+  </Step>
+  <Step title="SDK constructor arguments">
+    Values passed to `HeadroomClient(...)` or `HeadroomConfig(...)`.
+  </Step>
+  <Step title="Per-request overrides">
+    `headroom_mode=`, `headroom_output_buffer_tokens=`, `headroom_tool_profiles=`, etc. passed directly to the completion call.
+  </Step>
+</Steps>

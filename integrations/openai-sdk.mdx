@@ -1,0 +1,196 @@
+---
+title: "Add Headroom to OpenAI SDK Applications"
+sidebarTitle: "OpenAI SDK"
+description: "Wrap your OpenAI client with withHeadroom() to compress messages automatically before every chat completion call, in Python or TypeScript."
+---
+
+Headroom integrates with the OpenAI SDK through a single wrapper function — `withHeadroom()` — that intercepts `chat.completions.create()` calls and compresses messages before they reach OpenAI. All other methods (embeddings, images, audio) pass through unchanged, so your existing code keeps working without modification.
+
+## Installation
+
+<Tabs>
+  <Tab title="Python">
+    ```bash
+    pip install "headroom-ai"
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```bash
+    npm install headroom-ai openai
+    ```
+
+    <Note>
+      The TypeScript SDK sends messages to a local Headroom proxy for compression. Start the proxy before using the SDK:
+
+      ```bash
+      pip install "headroom-ai[proxy]"
+      headroom proxy
+      ```
+    </Note>
+  </Tab>
+</Tabs>
+
+## Quick start
+
+<Tabs>
+  <Tab title="Python">
+    In Python, use `HeadroomClient` to wrap your OpenAI instance. The resulting client has the same API surface as the native `OpenAI` client:
+
+    ```python
+    from openai import OpenAI
+    from headroom import HeadroomClient
+
+    client = HeadroomClient(OpenAI())
+
+    # Messages are compressed automatically before sending
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=long_conversation,
+    )
+    ```
+
+    You can also use `compress()` directly before passing messages to the OpenAI client:
+
+    ```python
+    from openai import OpenAI
+    from headroom import compress
+
+    openai_client = OpenAI()
+
+    messages = [{"role": "user", "content": large_tool_output}]
+    compressed = compress(messages, model="gpt-4o")
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=compressed.messages,
+    )
+
+    print(f"Saved {compressed.tokens_saved} tokens")
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    In TypeScript, import `withHeadroom` from the `headroom-ai/openai` subpath and pass your `OpenAI` instance:
+
+    ```typescript
+    import { withHeadroom } from 'headroom-ai/openai';
+    import OpenAI from 'openai';
+
+    const client = withHeadroom(new OpenAI());
+
+    // Messages are compressed automatically before sending
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o',
+      messages: longConversation,
+    });
+    ```
+
+    That's it. Every call to `client.chat.completions.create()` compresses the messages first. The response format is identical to the unwrapped client.
+  </Tab>
+</Tabs>
+
+## How it works
+
+`withHeadroom()` returns a proxy around your OpenAI client that intercepts `chat.completions.create()`:
+
+<Steps>
+  <Step title="Extract messages">
+    Pulls the `messages` array from the request parameters.
+  </Step>
+  <Step title="Compress">
+    Runs the Headroom pipeline — SmartCrusher, CodeCompressor, Kompress-v2-base — depending on content type.
+  </Step>
+  <Step title="Forward">
+    Replaces the original messages with the compressed result and forwards the full request to OpenAI as normal.
+  </Step>
+</Steps>
+
+All other client methods are untouched:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/openai';
+import OpenAI from 'openai';
+
+const client = withHeadroom(new OpenAI());
+
+// These pass through unchanged
+const embedding = await client.embeddings.create({
+  model: 'text-embedding-3-small',
+  input: 'Hello world',
+});
+```
+
+## Options
+
+Pass compression options as the second argument to control which model context limit to target and which proxy endpoint to use:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/openai';
+import OpenAI from 'openai';
+
+const client = withHeadroom(new OpenAI(), {
+  model: 'gpt-4o',
+  baseUrl: 'http://localhost:8787',
+});
+```
+
+## Streaming
+
+Compression happens before the request is sent, so streaming responses work exactly as normal:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/openai';
+import OpenAI from 'openai';
+
+const client = withHeadroom(new OpenAI());
+
+const stream = await client.chat.completions.create({
+  model: 'gpt-4o',
+  messages: longConversation,
+  stream: true,
+});
+
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? '');
+}
+```
+
+## Tool calling
+
+Tool call messages and tool results are compressed like any other message content. Large tool outputs — JSON arrays, log dumps, search results — see the biggest savings (often 70–92%):
+
+```typescript
+import { withHeadroom } from 'headroom-ai/openai';
+import OpenAI from 'openai';
+
+const client = withHeadroom(new OpenAI());
+
+const response = await client.chat.completions.create({
+  model: 'gpt-4o',
+  messages: [
+    { role: 'user', content: 'Search for recent errors' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        {
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'search', arguments: '{"q":"errors"}' },
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      tool_call_id: 'call_1',
+      content: hugeJsonResult, // Compressed automatically
+    },
+  ],
+  tools: [
+    { type: 'function', function: { name: 'search', parameters: {} } },
+  ],
+});
+```
+
+<Tip>
+  Tool outputs are where Headroom delivers the most savings. JSON arrays and log files can compress by 70–92% with no loss of fidelity the model needs.
+</Tip>

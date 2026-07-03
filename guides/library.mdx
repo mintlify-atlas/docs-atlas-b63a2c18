@@ -1,0 +1,256 @@
+---
+title: "Using Headroom as a Python or TypeScript Library"
+sidebarTitle: "Library"
+description: "Call compress() inline in any Python or TypeScript app to shrink messages before sending — no proxy needed, full token-savings metrics included."
+---
+
+Headroom's library mode is the most direct integration path: import `compress`, pass your message list, and get back a compressed copy alongside token-savings metrics — no proxy process, no infrastructure changes, and no dependency on a running server. The Python package runs the full pipeline locally; the TypeScript SDK delegates to a local proxy HTTP endpoint.
+
+## Installation
+
+```bash
+# Python — ships the headroom CLI and full compression pipeline
+pip install "headroom-ai[all]"
+
+# TypeScript SDK (library only — no headroom CLI)
+npm install headroom-ai
+```
+
+## One-function API
+
+<Tabs>
+  <Tab title="Python">
+    Import `compress` directly from the `headroom` package. It accepts any list of messages in Anthropic or OpenAI format and returns a `CompressResult`.
+
+    ```python
+    from headroom import compress
+
+    messages = [
+        {"role": "user", "content": "Analyze this output"},
+        {"role": "tool", "content": big_tool_output},
+    ]
+
+    result = compress(messages, model="gpt-4o")
+
+    # Use the compressed messages with any client
+    print(result.messages)           # same structure, fewer tokens
+    print(result.tokens_saved)       # e.g. 11 500
+    print(result.compression_ratio)  # e.g. 0.65  (65% removed)
+    print(result.tokens_before)      # original token count
+    print(result.tokens_after)       # post-compression token count
+    print(result.transforms_applied) # e.g. ["router:smart_crusher:0.35"]
+    ```
+
+    Pass the compressed messages straight into any SDK:
+
+    ```python
+    from anthropic import Anthropic
+    from headroom import compress
+
+    client = Anthropic()
+    messages = [{"role": "user", "content": huge_tool_output}]
+
+    compressed = compress(messages, model="claude-sonnet-4-5-20250929")
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        messages=compressed.messages,
+    )
+    ```
+
+    LiteLLM and any HTTP client work the same way — just replace `compressed.messages` wherever you build the request body.
+
+    ```python
+    import litellm
+    from headroom import compress
+
+    messages = [...]
+    compressed = compress(messages, model="bedrock/claude-sonnet")
+    response = litellm.completion(
+        model="bedrock/claude-sonnet",
+        messages=compressed.messages,
+    )
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    The TypeScript SDK's `compress` function delegates to a running local proxy at `http://localhost:8787` (or the `baseUrl` you specify). Start the proxy first, then call `compress` from your app.
+
+    ```typescript
+    import { compress } from 'headroom-ai';
+
+    const messages = [
+      { role: 'user', content: 'Analyze this output' },
+      { role: 'tool', content: bigToolOutput, tool_call_id: 'call_1' },
+    ];
+
+    const result = await compress(messages, {
+      model: 'gpt-4o',
+      baseUrl: 'http://localhost:8787',
+    });
+
+    console.log(result.messages);          // compressed messages
+    console.log(result.tokensSaved);       // e.g. 11500
+    console.log(result.compressionRatio);  // e.g. 0.65
+    console.log(result.tokensBefore);
+    console.log(result.tokensAfter);
+    console.log(result.transformsApplied);
+    console.log(result.ccrHashes);         // hashes for CCR retrieval
+    ```
+
+    <Note>
+      The TypeScript SDK does not bundle the compression pipeline itself. It calls `POST /v1/compress` on the local proxy, so the proxy must be running before you call `compress()`. Start it with `headroom proxy --port 8787` (requires `pip install "headroom-ai[proxy]"`).
+    </Note>
+  </Tab>
+</Tabs>
+
+## CompressConfig / CompressOptions parameters
+
+<Tabs>
+  <Tab title="Python — CompressConfig">
+    Pass a `CompressConfig` instance to `compress()` for fine-grained control, or use keyword arguments as shorthand — they override the config object.
+
+    ```python
+    from headroom import compress
+    from headroom.compress import CompressConfig
+
+    # Financial document: compress everything, keep 50 % of tokens
+    result = compress(
+        messages,
+        model="claude-opus-4-20250514",
+        config=CompressConfig(
+            compress_user_messages=True,
+            target_ratio=0.5,
+            protect_recent=0,
+        ),
+    )
+
+    # Aggressive log compression
+    result = compress(messages, model="gpt-4o", target_ratio=0.2)
+
+    # Conservative: protect the last 8 messages, skip ML compression
+    result = compress(
+        messages,
+        model="gpt-4o",
+        protect_recent=8,
+        kompress_model="disabled",
+    )
+    ```
+
+    | Field | Default | Description |
+    |---|---|---|
+    | `compress_user_messages` | `False` | Compress user messages too (default: skip for coding agents) |
+    | `compress_system_messages` | `True` | Compress system messages |
+    | `protect_recent` | `4` | Don't compress the last N messages |
+    | `protect_analysis_context` | `True` | Detect `analyze`/`review` intent and protect code |
+    | `target_ratio` | `None` | Keep ratio for Kompress text compression (e.g. `0.5` keeps 50 %) |
+    | `min_tokens_to_compress` | `250` | Minimum token count before a message is compressed |
+    | `kompress_model` | `None` | Override the Kompress HuggingFace model ID; `"disabled"` skips ML entirely |
+    | `savings_profile` | `None` | Named high-savings profile, e.g. `"agent-90"` |
+
+  </Tab>
+  <Tab title="TypeScript — CompressOptions">
+    Pass a `CompressOptions` object as the second argument to `compress()`.
+
+    ```typescript
+    import { compress } from 'headroom-ai';
+    import type { CompressOptions } from 'headroom-ai';
+
+    const options: CompressOptions = {
+      model: 'gpt-4o',
+      baseUrl: 'http://localhost:8787',
+      timeout: 10_000,
+      fallback: true,   // return original messages on proxy error
+      retries: 2,
+    };
+
+    const result = await compress(messages, options);
+    ```
+
+    | Field | Default | Description |
+    |---|---|---|
+    | `model` | `"gpt-4o"` | Model name passed to the proxy for token counting |
+    | `baseUrl` | `"http://localhost:8787"` | Headroom proxy URL |
+    | `apiKey` | — | Optional API key for authenticated proxy deployments |
+    | `timeout` | `30000` | Request timeout in milliseconds |
+    | `fallback` | `false` | Return original messages instead of throwing on proxy error |
+    | `retries` | `1` | Number of retry attempts on transient failures |
+    | `tokenBudget` | — | Compress to fit within this token count |
+    | `hooks` | — | `CompressionHooks` instance for pre/post processing |
+  </Tab>
+</Tabs>
+
+## HeadroomClient wrapper (Python)
+
+`HeadroomClient` wraps an existing provider SDK client and automatically compresses every outbound request. It is the drop-in option when you want compression without changing call sites throughout your codebase.
+
+```python
+from headroom.client import HeadroomClient
+from headroom.providers.openai import OpenAIProvider
+from openai import OpenAI
+
+client = HeadroomClient(
+    original_client=OpenAI(),
+    provider=OpenAIProvider(),
+    default_mode="optimize",
+)
+
+# Use exactly like the OpenAI client — compression is transparent
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=messages,
+)
+
+# Inspect session-level savings
+stats = client.get_stats()
+print(stats)
+
+# Check that routing and compression are working
+result = client.validate_setup()
+print(result)
+```
+
+## ASGI middleware
+
+For FastAPI, Starlette, or any other ASGI application, add `CompressionMiddleware` to compress all LLM requests that pass through your app layer:
+
+```python
+from fastapi import FastAPI
+from headroom.middleware import CompressionMiddleware
+
+app = FastAPI()
+app.add_middleware(CompressionMiddleware)
+```
+
+Every request the middleware intercepts is compressed before being forwarded, and the response is returned unchanged to the caller.
+
+## Integrations quick reference
+
+| Your stack | Import |
+|---|---|
+| Any Python app | `from headroom import compress` |
+| Any TypeScript app | `import { compress } from 'headroom-ai'` |
+| Anthropic SDK | `withHeadroom(new Anthropic())` |
+| OpenAI SDK | `withHeadroom(new OpenAI())` |
+| Vercel AI SDK | `wrapLanguageModel({ model, middleware: headroomMiddleware() })` |
+| LiteLLM | `litellm.callbacks = [HeadroomCallback()]` |
+| LangChain | `HeadroomChatModel(your_llm)` |
+| Agno | `HeadroomAgnoModel(your_model)` |
+| ASGI apps | `app.add_middleware(CompressionMiddleware)` |
+| Multi-agent | `SharedContext().put / .get` |
+
+## When to use library vs proxy vs agent-wrap
+
+<CardGroup cols={3}>
+  <Card title="Library" icon="code">
+    You control the call site and want compression inline — Python or TypeScript app, LangChain chain, custom agent loop. No extra process to manage.
+  </Card>
+  <Card title="Proxy" icon="server">
+    You want zero code changes. Any language, any client. Point `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` at the proxy and compression is automatic.
+  </Card>
+  <Card title="Agent Wrap" icon="terminal">
+    You use a CLI coding agent (Claude Code, Codex, Aider, etc.) and want one-command setup. `headroom wrap claude` starts the proxy and launches the agent with the right env vars pre-set.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Start with `headroom wrap` or the proxy for zero-effort savings. Switch to the library when you need programmatic control over compression config, want to embed metrics in your own observability pipeline, or are building a framework adapter.
+</Tip>

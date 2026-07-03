@@ -1,0 +1,258 @@
+---
+title: "Run the Headroom Proxy for Zero-Code Compression"
+sidebarTitle: "Proxy"
+description: "Start headroom proxy to compress all LLM traffic automatically — zero code changes. Works with Claude Code, Codex, Cursor, and any OpenAI-compatible client."
+---
+
+The Headroom proxy is a standalone local HTTP server that compresses every LLM request passing through it. Point any existing client at the proxy and get automatic context optimization without touching your application code. It speaks both the Anthropic and OpenAI wire formats and proxies transparently to the upstream provider.
+
+## Getting started
+
+<Steps>
+  <Step title="Install Headroom">
+    ```bash
+    pip install "headroom-ai[all]"
+    ```
+    Requires Python 3.10+. For the proxy only (lighter install): `pip install "headroom-ai[proxy]"`.
+  </Step>
+  <Step title="Start the proxy">
+    ```bash
+    headroom proxy                    # binds to 127.0.0.1:8787
+    headroom proxy --port 8080        # custom port
+    headroom proxy --host 0.0.0.0     # listen on all interfaces (add HEADROOM_PROXY_TOKEN for non-loopback)
+    ```
+  </Step>
+  <Step title="Point your client at the proxy">
+    ```bash
+    # Claude Code
+    ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+    # Any OpenAI-compatible client
+    OPENAI_BASE_URL=http://localhost:8787/v1 your-app
+    ```
+    No other changes required — the proxy forwards your API key to the upstream provider unchanged.
+  </Step>
+  <Step title="Verify savings">
+    ```bash
+    headroom doctor          # health check — confirms routing is working
+    headroom dashboard       # live savings dashboard in your browser
+    curl http://localhost:8787/stats
+    ```
+  </Step>
+</Steps>
+
+## CLI options
+
+### Core options
+
+| Option | Default | Env var | Description |
+|---|---|---|---|
+| `--host` | `127.0.0.1` | `HEADROOM_HOST` | Host to bind to |
+| `--port` | `8787` | `HEADROOM_PORT` | Port to bind to |
+| `--workers` | `1` | `HEADROOM_WORKERS` | Number of Uvicorn worker processes |
+| `--limit-concurrency` | `1000` | `HEADROOM_LIMIT_CONCURRENCY` | Max concurrent connections before Uvicorn returns 503 |
+| `--max-connections` | `500` | `HEADROOM_MAX_CONNECTIONS` | Maximum upstream HTTP connections |
+| `--max-keepalive` | `100` | `HEADROOM_MAX_KEEPALIVE` | Maximum upstream keep-alive connections |
+| `--no-optimize` | `false` | — | Disable compression (passthrough mode) |
+| `--no-cache` | `false` | — | Disable semantic caching |
+| `--no-rate-limit` | `false` | — | Disable rate limiting |
+| `--log-file` | None | `HEADROOM_LOG_FILE` | Path to write request/response logs as JSONL |
+| `--budget` | None | `HEADROOM_BUDGET` | Budget limit in USD per `--budget-period` |
+| `--budget-period` | `daily` | `HEADROOM_BUDGET_PERIOD` | Period: `hourly`, `daily`, or `monthly` |
+| `--backend` | `anthropic` | `HEADROOM_BACKEND` | Backend: `anthropic`, `bedrock`, `openrouter`, `anyllm`, or `litellm-<provider>` |
+| `--stateless` | `false` | `HEADROOM_STATELESS` | Disable all filesystem writes — for containerized deployments |
+| `--telemetry` | `false` | `HEADROOM_TELEMETRY` | Opt in to anonymous usage telemetry (off by default) |
+
+### Context management
+
+| Option | Default | Env var | Description |
+|---|---|---|---|
+| `--mode token` | default | `HEADROOM_MODE` | Prioritize token compression; prior turns may be rewritten for maximum savings |
+| `--mode cache` | — | `HEADROOM_MODE` | Freeze prior turns to maximize provider prefix-cache hit rate |
+| `--target-ratio` | None | `HEADROOM_TARGET_RATIO` | Override Kompress keep-ratio (e.g. `0.4` keeps ~40 % of text tokens) |
+| `--intercept-tool-results` | `false` | — | Opt into tool-result interceptors such as ast-grep Read outlining |
+| `--no-read-lifecycle` | `false` | — | Disable stale/superseded Read-output compression |
+| `--code-aware` / `--no-code-aware` | disabled | `HEADROOM_CODE_AWARE_ENABLED` | Enable AST-based code compression (requires `headroom-ai[code]`) |
+| `--lossless` | `false` | `HEADROOM_LOSSLESS` | Format-native lossless compaction without CCR markers |
+| `--no-ccr-inject-tool` | `false` | `HEADROOM_NO_CCR_INJECT_TOOL` | Don't inject the `headroom_retrieve` CCR tool |
+| `--protect-tool-results` | — | `HEADROOM_PROTECT_TOOL_RESULTS` | Comma-separated tool names whose results are never lossy-compressed |
+
+### Custom API targets
+
+| Option | Env var | Description |
+|---|---|---|
+| `--anthropic-api-url` | `ANTHROPIC_TARGET_API_URL` | Custom Anthropic API URL for passthrough endpoints |
+| `--openai-api-url` | `OPENAI_TARGET_API_URL` | Custom OpenAI API URL for passthrough endpoints |
+| `--gemini-api-url` | `GEMINI_TARGET_API_URL` | Custom Gemini API URL |
+| `--bedrock-api-url` | `BEDROCK_TARGET_API_URL` | Bedrock InvokeModel upstream for `/model/{id}/invoke` passthrough routes |
+| `--region` | `HEADROOM_REGION` | Cloud region for Bedrock/Vertex (default: `us-west-2`) |
+
+### Memory and learning
+
+| Option | Default | Description |
+|---|---|---|
+| `--memory` | `false` | Enable persistent memory with provider-appropriate tool injection |
+| `--memory-storage` | `project` | Partitioning: `project` (per-workspace DB), `user`, or `global` |
+| `--memory-top-k` | `10` | Number of semantically relevant memories to inject as context |
+| `--no-memory-tools` | `false` | Disable automatic memory tool injection |
+| `--no-memory-context` | `false` | Disable automatic memory context injection |
+| `--learn` | `false` | Enable live traffic learning (implies `--memory`) |
+| `--min-evidence` | `5` | Minimum observations before a learned pattern is persisted |
+
+## Proxy modes: token vs cache
+
+```bash
+# token mode (default): maximize compression
+# Prior turns may be rewritten for the best savings.
+headroom proxy --mode token
+
+# cache mode: preserve provider prefix-cache stability
+# Prior turns are frozen; only new content is compressed.
+headroom proxy --mode cache
+```
+
+Use `token` when you want maximum token savings. Use `cache` when you are working with long multi-turn sessions and want to keep Anthropic or OpenAI prefix-cache hit rates high to reduce latency and cost.
+
+## Output token reduction
+
+Everything above reduces what you *send* to the LLM. The proxy can also trim what the model *writes back* — output tokens cost up to 5× input tokens on Opus-class models.
+
+```bash
+export HEADROOM_OUTPUT_SHAPER=1   # off by default
+headroom proxy --port 8787
+```
+
+When `HEADROOM_OUTPUT_SHAPER=1` is set the proxy:
+
+- Appends a short verbosity note to the tail of the system prompt (without disturbing your cache prefix).
+- Routes low-effort turns (tool-result continuations, file reads) to reduced thinking effort; new questions and errors keep full effort.
+
+To measure output savings against a held-out control group:
+
+```bash
+export HEADROOM_OUTPUT_HOLDOUT=0.1   # 10 % of turns are unshaped
+headroom dashboard                   # shows "Output Tokens Saved" with confidence band
+```
+
+## Pointing clients at the proxy
+
+```bash
+# Claude Code (Anthropic format)
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+# OpenAI SDK or any OpenAI-compatible client
+OPENAI_BASE_URL=http://localhost:8787/v1 python my_app.py
+
+# Codex
+OPENAI_BASE_URL=http://localhost:8787/v1 codex
+```
+
+Your existing API keys are forwarded to the upstream provider unchanged. The proxy never stores or modifies credentials.
+
+## tokensave binary trust model
+
+`headroom wrap` registers **tokensave** (a local code-graph MCP server) as the default coding-task compressor. tokensave ships as a prebuilt Rust binary; every supported release asset is **pinned to a SHA-256 digest** in Headroom (`headroom/graph/tokensave_installer.py`). The downloaded bytes are verified against that digest before extraction — a mismatch aborts the install and Headroom falls back to the Serena backup rather than running unverified code.
+
+```bash
+# Never reach the network — use an already-installed tokensave or fall back to Serena
+HEADROOM_BINARIES_OFFLINE=1 headroom wrap claude
+
+# Override the pinned release tag (requires HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED=1)
+HEADROOM_TOKENSAVE_VERSION=v1.2.3 headroom wrap claude
+
+# Skip the primary compressor entirely
+headroom wrap claude --no-tokensave
+
+# Force the Serena backup
+headroom wrap claude --serena
+```
+
+## Stats and dashboard
+
+### API endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Aggregate health and current session savings |
+| `GET /livez` | Process liveness check |
+| `GET /readyz` | Traffic readiness check |
+| `GET /stats` | Live session stats plus durable `persistent_savings` totals |
+| `GET /stats-history` | Hourly, daily, weekly, and monthly savings rollups |
+| `GET /metrics` | Prometheus-format metrics |
+
+```bash
+# Live stats
+curl http://localhost:8787/stats
+
+# Historical rollups (also supports ?format=csv&series=weekly)
+curl "http://localhost:8787/stats-history"
+
+# Prometheus scrape
+curl http://localhost:8787/metrics
+```
+
+### Dashboard
+
+```bash
+headroom dashboard               # opens http://localhost:8787/dashboard in your browser
+headroom dashboard --no-open     # print the URL instead
+headroom dashboard --port 8080   # if the proxy is on a non-default port
+```
+
+The dashboard shows input token savings, output token savings (if `HEADROOM_OUTPUT_SHAPER=1`), model usage breakdown, and dollar savings (requires Python 3.13 + LiteLLM).
+
+## Production deployment
+
+<Tabs>
+  <Tab title="gunicorn">
+    ```bash
+    pip install gunicorn
+
+    gunicorn headroom.proxy.server:app \
+      --workers 4 \
+      --bind 0.0.0.0:8787 \
+      --worker-class uvicorn.workers.UvicornWorker
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```dockerfile
+    FROM python:3.13-slim
+    RUN pip install "headroom-ai[proxy]"
+    EXPOSE 8787
+    CMD ["headroom", "proxy", "--host", "0.0.0.0"]
+    ```
+
+    ```bash
+    docker pull ghcr.io/chopratejas/headroom:latest
+    docker run -p 8787:8787 ghcr.io/chopratejas/headroom:latest
+    ```
+  </Tab>
+  <Tab title="Stateless / load-balanced">
+    Use `--stateless` to disable all filesystem writes. Suitable for containerized or read-only deployments where multiple instances share a load balancer.
+
+    ```bash
+    headroom proxy --host 0.0.0.0 --stateless
+    ```
+
+    <Warning>
+      `--stateless` disables memory, learning, and TOIN. CCR retrieval hashes will not persist across restarts.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Environment variable reference
+
+```bash
+export HEADROOM_HOST=0.0.0.0
+export HEADROOM_PORT=8787
+export HEADROOM_MODE=token
+export HEADROOM_BUDGET=100.0
+export HEADROOM_BUDGET_PERIOD=daily
+export HEADROOM_OUTPUT_SHAPER=1
+
+# Custom upstream targets
+export ANTHROPIC_TARGET_API_URL=https://litellm.company.internal
+export OPENAI_TARGET_API_URL=https://custom.openai.endpoint.com
+
+headroom proxy
+```

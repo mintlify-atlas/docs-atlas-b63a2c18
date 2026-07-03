@@ -1,0 +1,195 @@
+---
+title: "Prefix-Stable KV Cache Optimization with CacheAligner"
+sidebarTitle: "Cache Opt."
+description: "How Headroom stabilizes prompt prefixes for Anthropic, OpenAI, and Google KV caches using DynamicContentDetector and provider-specific cache optimizers."
+---
+
+LLM providers cache the attention states (KV cache) computed for your prompt prefix, and re-using that cache can cut your per-request cost by 50–90%. If the prefix is byte-identical across requests, the provider skips recomputation and charges you at a steep discount — up to 90% off on Anthropic. But a single dynamic token anywhere in the prefix (a timestamp, a session UUID, a JWT) invalidates the entire cache entry and resets your bill to full price.
+
+Headroom's **CacheAligner** detects those volatile tokens and surfaces them as warnings so you know when your cache prefix is unstable. When combined with the provider-specific **CacheOptimizer** classes, Headroom can also insert explicit cache breakpoints and manage CachedContent lifecycles on your behalf.
+
+## Why Prefix Stability Matters
+
+<CardGroup cols={3}>
+  <Card title="Anthropic" icon="a">
+    **90% discount** on cached input tokens. Cache write costs 25% extra on first write; subsequent reads are 10× cheaper than regular input.
+  </Card>
+  <Card title="OpenAI" icon="o">
+    **50% discount** via automatic prefix caching. No API markers needed — just keep the prefix byte-identical across requests (min 1,024 tokens).
+  </Card>
+  <Card title="Google" icon="g">
+    **75% discount** via the explicit CachedContent API. Minimum cache size: 32,768 tokens.
+  </Card>
+</CardGroup>
+
+A date string like `"Current Date: 2025-06-15"` in your system prompt changes every day. Every day is a full-price request for every user — even if the rest of your 50,000-token system prompt is identical.
+
+## CacheAligner: Dynamic Content Detection
+
+`CacheAligner` is a **detector-only** transform. It scans system messages for volatile tokens and emits warnings — it never mutates the prompt (mutating the cached prefix would immediately bust the cache it's trying to protect).
+
+### DynamicContentDetector patterns
+
+When `use_dynamic_detector=True` (default), the detector uses **15+ structural patterns** organized into detection tiers:
+
+<Tabs>
+  <Tab title="regex (default, ~0ms)">
+    Fast structural / universal patterns that catch the most common sources of cache instability:
+
+    | Pattern | Example |
+    |---|---|
+    | UUIDs (RFC 4122) | `550e8400-e29b-41d4-a716-446655440000` |
+    | API keys / tokens | `sk-abc123...`, `api_key_xyz...` |
+    | JWT tokens | `eyJhbGciOiJIUzI1NiIs...` (3 dot-separated base64url segments) |
+    | Unix timestamps | `1705312847` |
+    | Request / trace IDs | `req_abc123`, `trace_xyz789` |
+    | Hex hashes | MD5 (32 chars), SHA1 (40 chars), SHA256 (64 chars) |
+    | ISO 8601 dates | `2025-06-15`, `2025-06-15T14:30:00Z` |
+    | Version numbers | `v1.2.3`, `v2.0.0-beta` |
+    | Structural labels | `"Session: abc123"`, `"User: john@example.com"` |
+    | High-entropy strings | Random-looking alphanumeric sequences above `entropy_threshold` |
+  </Tab>
+  <Tab title="ner (optional, ~5–10ms)">
+    Named Entity Recognition via spaCy. Catches named entities that wouldn't match structural regex patterns (e.g. proper nouns used as session identifiers).
+
+    Enable by adding `"ner"` to `detection_tiers`. Requires `pip install spacy` and a downloaded language model.
+  </Tab>
+  <Tab title="semantic (optional, ~20–50ms)">
+    Embedding-based similarity detection. Compares candidate tokens against known dynamic-content embeddings to catch novel patterns.
+
+    Enable by adding `"semantic"` to `detection_tiers`. Requires `pip install headroom-ai[relevance]`.
+  </Tab>
+</Tabs>
+
+### CacheAlignerConfig
+
+Full configuration reference from `headroom/config.py`:
+
+```python
+from headroom.config import CacheAlignerConfig
+
+aligner_config = CacheAlignerConfig(
+    enabled=False,               # Disabled by default (detection still runs for warnings)
+    use_dynamic_detector=True,   # Use DynamicContentDetector (15+ patterns)
+    detection_tiers=["regex"],   # Fast structural detection; add "ner" or "semantic" if needed
+    entropy_threshold=0.7,       # 0–1 scale; higher = only very random strings (UUIDs)
+                                 # lower = more aggressive (may catch non-random content)
+    extra_dynamic_labels=[       # Additional KEY names whose VALUES are treated as dynamic
+        "session",               # e.g. detects "session: abc123" → extracts "abc123"
+        "request_id",
+    ],
+    # Legacy date patterns (used when use_dynamic_detector=False)
+    date_patterns=[
+        r"Current [Dd]ate:?\s*\d{4}-\d{2}-\d{2}",
+        r"Today is \w+,?\s+\w+ \d+",
+        r"Today's date:?\s*\d{4}-\d{2}-\d{2}",
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+    ],
+    normalize_whitespace=True,
+    collapse_blank_lines=True,
+    dynamic_tail_separator="\n\n---\n[Dynamic Context]\n",
+)
+```
+
+<Warning>
+  `CacheAligner` is applied only to **system messages**, never to user, assistant, or tool content. Whitespace normalization can break code blocks with significant indentation or ASCII art — review the warnings before enabling `enabled=True`.
+</Warning>
+
+## Provider-Specific Cache Optimizers
+
+`CacheOptimizerConfig` complements `CacheAligner`. While `CacheAligner` detects volatile tokens, the `CacheOptimizer` classes apply the provider's native caching mechanism to your stable prefix.
+
+```python
+from headroom.config import CacheOptimizerConfig, HeadroomConfig
+
+config = HeadroomConfig(
+    cache_optimizer=CacheOptimizerConfig(
+        enabled=True,
+        auto_detect_provider=True,  # Detect Anthropic / OpenAI / Google from client
+        min_cacheable_tokens=1024,  # Skip cache optimization for short prompts
+        enable_semantic_cache=False,
+    )
+)
+```
+
+<Tabs>
+  <Tab title="Anthropic">
+    **AnthropicCacheOptimizer** inserts explicit `cache_control` breakpoints at the right positions in your messages so stable prefixes (system prompt, early conversation turns) are cached across requests.
+
+    | Metric | Value |
+    |---|---|
+    | Cache read discount | 90% off input price |
+    | Cache write cost | 25% premium on first write |
+    | Cache TTL | 5 minutes (extended on each hit) |
+
+    No API changes needed on your side — the optimizer injects the breakpoints automatically before forwarding the request.
+  </Tab>
+  <Tab title="OpenAI">
+    **OpenAICacheOptimizer** ensures your message prefix is byte-identical across requests, which is the only requirement for OpenAI's automatic prefix caching. No explicit API markers are needed.
+
+    | Metric | Value |
+    |---|---|
+    | Cache read discount | 50% off input price |
+    | Activation | Automatic (prefix must match) |
+    | Min prefix length | 1,024 tokens |
+
+    CacheAligner's whitespace normalization is especially useful here — it prevents trivial whitespace differences from busting the prefix match.
+  </Tab>
+  <Tab title="Google">
+    **GoogleCacheOptimizer** manages the **CachedContent API** lifecycle: creating, refreshing, and referencing cached content objects automatically. Cached tokens cost 75% less.
+
+    | Metric | Value |
+    |---|---|
+    | Cache read discount | 75% off input price |
+    | Mechanism | Explicit CachedContent API objects |
+    | Min cache size | 32,768 tokens |
+  </Tab>
+</Tabs>
+
+## `--mode cache` Proxy Flag
+
+The proxy's `--mode cache` flag maximizes prefix hit rates for long-running agentic sessions by **freezing prior turns**. Once a turn's messages have been sent to the provider and cached, they are treated as immutable — the compression pipeline skips them on subsequent requests.
+
+```bash
+headroom proxy --port 8787 --mode cache
+```
+
+This is controlled by `PrefixFreezeConfig` internally:
+
+```python
+from headroom.config import PrefixFreezeConfig
+
+# Default settings
+freeze_config = PrefixFreezeConfig(
+    enabled=True,
+    min_cached_tokens=1024,            # Only freeze prefixes above this size
+    session_ttl_seconds=600,           # Clean up session tracker after 10 minutes
+    force_compress_threshold=0.5,      # Bust cache only if compression saves > 50%
+                                       # (Anthropic's 90% read discount means busting
+                                       # the cache is almost never worth it)
+)
+```
+
+## When Cache Optimization Pays Off
+
+Cache optimization has the largest impact when:
+
+1. **The same system prompt is reused across many requests** — long system prompts with tool definitions, instructions, or RAG content that doesn't change between turns.
+2. **Conversations are long** — the prefix grows with each turn, and re-caching it every request becomes increasingly expensive.
+3. **You use expensive models** — Anthropic's 90% read discount on Opus-class models translates directly to dollar savings.
+
+## How Savings Compound
+
+CacheAligner and compression transforms work together. A typical Anthropic workflow:
+
+```text
+100K input tokens
+  ──► SmartCrusher compresses to 20K tokens      (80% reduction)
+  ──► 18K of 20K hit the Anthropic prefix cache  (90% cache read discount)
+  ──► Effective cost: 2K full-price + 18K at 10% = 3.8K equivalent tokens
+  ──► Total savings vs. uncompressed, uncached:  96.2%
+```
+
+<Tip>
+  Run `headroom doctor` to check whether your current setup has KV cache hits. The output shows the stable prefix hash and flags if it changed between the last two requests.
+</Tip>

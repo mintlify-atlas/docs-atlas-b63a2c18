@@ -1,0 +1,207 @@
+---
+title: "Headroom: Context Compression for LLM Agents"
+sidebarTitle: "Introduction"
+description: "Headroom is a local-first context compression layer that cuts LLM token usage by 60–95% across tool outputs, logs, RAG chunks, files, and conversation history."
+---
+
+Headroom sits between your agent and the LLM provider, intercepting every prompt before it is sent and compressing its contents — tool outputs, build logs, RAG chunks, file reads, and conversation history — using content-aware algorithms that preserve the information the model actually needs. This page explains what Headroom does, how it is deployed, the architecture that makes it work, and how it compares to alternative approaches.
+
+## What Headroom Does
+
+Every AI agent accumulates context waste: search results with hundreds of near-duplicate entries, log files where one FATAL line matters, JSON arrays where the first and last entries tell the whole story. Headroom removes that waste automatically. The LLM sees a compressed prompt containing the same signal in a fraction of the tokens, and it answers identically — the benchmarks prove it.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install and compress your first messages in under 5 minutes.
+  </Card>
+  <Card title="Proxy Guide" icon="server" href="/guides/proxy">
+    Zero code changes: run `headroom proxy` and point your client at it.
+  </Card>
+  <Card title="Agent Wrap" icon="wand-magic-sparkles" href="/guides/agent-wrap">
+    One command wraps Claude Code, Codex, Cursor, Aider, and more.
+  </Card>
+  <Card title="How Compression Works" icon="microchip" href="/concepts/how-compression-works">
+    ContentRouter, SmartCrusher, CodeCompressor, and Kompress-v2-base explained.
+  </Card>
+</CardGroup>
+
+## Proven Savings and Accuracy
+
+Headroom delivers 60–95% token reduction on real agent workloads without degrading model quality:
+
+**Savings on real workloads:**
+
+| Workload | Before | After | Savings |
+|---|---:|---:|---:|
+| Code search (100 results) | 17,765 | 1,408 | **92%** |
+| SRE incident debugging | 65,694 | 5,118 | **92%** |
+| GitHub issue triage | 54,174 | 14,761 | **73%** |
+| Codebase exploration | 78,502 | 41,254 | **47%** |
+
+**Accuracy preserved on standard benchmarks:**
+
+| Benchmark | Category | N | Baseline | Headroom | Delta |
+|---|---|---:|---:|---:|---|
+| GSM8K | Math | 100 | 0.870 | 0.870 | **±0.000** |
+| TruthfulQA | Factual | 100 | 0.530 | 0.560 | **+0.030** |
+| SQuAD v2 | QA | 100 | — | **97%** | 19% compression |
+| BFCL | Tools | 100 | — | **97%** | 32% compression |
+
+Reproduce the benchmarks yourself: `python -m headroom.evals suite --tier 1`
+
+## Three Deployment Modes
+
+Headroom meets you wherever you are. You do not need to restructure your code to start saving tokens.
+
+<Tabs>
+  <Tab title="Library">
+    Import `compress()` directly in any Python or TypeScript application. One call, no proxy, no infrastructure:
+
+    ```python
+    from headroom import compress
+
+    result = compress(messages, model="claude-sonnet-4-5-20250929")
+    # result.messages  — compressed, same format
+    # result.tokens_saved, result.compression_ratio
+    ```
+
+    ```typescript
+    import { compress } from 'headroom-ai';
+
+    const result = await compress(messages, {
+      model: 'gpt-4o',
+      baseUrl: 'http://localhost:8787',
+    });
+    ```
+  </Tab>
+  <Tab title="Proxy">
+    Start a local HTTP proxy and point your existing client at it — zero code changes, any language:
+
+    ```bash
+    headroom proxy --port 8787
+
+    # Anthropic clients
+    ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+    # OpenAI-compatible clients
+    OPENAI_BASE_URL=http://localhost:8787/v1 your-app
+    ```
+
+    Every request is compressed transparently. View live savings at `http://localhost:8787/dashboard`.
+  </Tab>
+  <Tab title="Agent Wrap">
+    One command wraps a coding agent, starts the proxy, and injects the correct environment variables:
+
+    ```bash
+    headroom wrap claude       # Claude Code
+    headroom wrap codex        # OpenAI Codex
+    headroom wrap cursor       # Cursor (prints base URLs for manual config)
+    headroom wrap aider        # Aider
+    headroom wrap cline        # Cline
+    headroom wrap continue     # Continue
+    headroom wrap goose        # Goose
+    headroom wrap openhands    # OpenHands
+
+    # Undo durable wrapping
+    headroom unwrap claude
+    ```
+  </Tab>
+  <Tab title="MCP">
+    Expose compression as MCP tools that any MCP client can call:
+
+    ```bash
+    headroom mcp install
+    ```
+
+    This registers three tools: `headroom_compress`, `headroom_retrieve`, and `headroom_stats`. Claude Code and other MCP-native clients can invoke them directly from the conversation.
+  </Tab>
+</Tabs>
+
+## Architecture
+
+```
+Your agent / app
+  (Claude Code, Cursor, Codex, LangChain, Agno, Strands, your own code…)
+       │   prompts · tool outputs · logs · RAG results · files
+       ▼
+   ┌────────────────────────────────────────────────────┐
+   │  Headroom   (runs locally — your data stays here)  │
+   │  ────────────────────────────────────────────────  │
+   │  CacheAligner  →  ContentRouter  →  CCR            │
+   │                    ├─ SmartCrusher   (JSON)        │
+   │                    ├─ CodeCompressor (AST)         │
+   │                    └─ Kompress-v2-base (text, HF)  │
+   │                                                    │
+   │  Cross-agent memory  ·  headroom learn  ·  MCP     │
+   └────────────────────────────────────────────────────┘
+       │   compressed prompt  +  retrieval tool
+       ▼
+LLM provider  (Anthropic · OpenAI · Bedrock · …)
+```
+
+### ContentRouter
+
+The `ContentRouter` inspects every message block, detects its content type (JSON, source code, log file, search results, plain prose), and dispatches it to the right compressor. Detection uses [Magika](https://github.com/google/magika)'s ML-based content-type classifier — no regex fragility, no configuration required.
+
+### SmartCrusher (JSON)
+
+Handles JSON arrays of objects — the format most tool outputs use. It deduplicates near-identical array entries, preserves anomalies and high-relevance items, and applies BM25 scoring against the user's query. Typical savings: 70–90%.
+
+### CodeCompressor (AST)
+
+Uses [tree-sitter](https://tree-sitter.github.io/tree-sitter/) to parse source code into an AST, then strips comments, docstrings, and body blocks that are structurally irrelevant to the current query. Supports Python, JavaScript/TypeScript, Go, Rust, Java, C/C++, and Perl. Typical savings: 40–70%.
+
+### Kompress-v2-base
+
+A [HuggingFace model](https://huggingface.co/chopratejas/kompress-v2-base) fine-tuned on agentic traces. It handles prose — plain text, documentation snippets, conversation history — that doesn't fit a structured compressor. Runs locally via ONNX INT8 quantization (no GPU needed). Typical savings: 30–50%.
+
+### CacheAligner
+
+Stabilizes message prefixes so provider KV caches (Anthropic prompt caching, OpenAI context caching) actually hit. Without stable prefixes, even repeated system prompts miss the cache and cost full price on every request.
+
+## CCR: Reversible Compression
+
+Every compressed block is stored locally under a content-addressed hash (CCR — Cached Compressed Reference). If the LLM needs the original during a reasoning step, it calls `headroom_retrieve` with the hash and receives the full original text.
+
+<Note>
+  Originals are cached locally within the configured TTL. CCR makes Headroom's compression **reversible** — the model is never cut off from information it legitimately needs.
+</Note>
+
+## Local-First: Your Data Never Leaves Your Machine
+
+Headroom runs the entire compression pipeline on your hardware. No content is sent to a third-party compression service. The `headroom proxy` process, the Kompress model weights, and the CCR cache all live on your machine under `~/.headroom/`.
+
+<Tip>
+  Running Headroom across a whole engineering org? The open-source project is designed for individual developers. For shared, always-on deployments with centralized config, org-wide dashboards, and SSO, contact **hello@headroomlabs.ai**.
+</Tip>
+
+## How Headroom Compares
+
+|  | Scope | Deploy | Local | Reversible |
+|---|---|---|:---:|:---:|
+| **Headroom** | All context — tools, RAG, logs, files, history | Proxy · library · middleware · MCP | ✅ | ✅ |
+| RTK | CLI command outputs | CLI wrapper | ✅ | ❌ |
+| lean-ctx | CLI commands, MCP tools, editor rules | CLI wrapper · MCP | ✅ | ❌ |
+| Compresr / Token Co. | Text sent to their API | Hosted API call | ❌ | ❌ |
+| OpenAI Compaction | Conversation history | Provider-native | ❌ | ❌ |
+
+<Note>
+  Headroom ships with the RTK binary for shell-output rewriting and can also use lean-ctx as the selected CLI context tool (`HEADROOM_CONTEXT_TOOL=lean-ctx`). Both are first-class parts of the Headroom stack — Headroom compresses everything downstream of them.
+</Note>
+
+## Integrations
+
+Drop Headroom into any existing stack:
+
+| Setup | Integration |
+|---|---|
+| Any Python app | `compress(messages, model=…)` |
+| Any TypeScript app | `await compress(messages, { model })` |
+| Anthropic / OpenAI SDK | `withHeadroom(new Anthropic())` · `withHeadroom(new OpenAI())` |
+| Vercel AI SDK | `wrapLanguageModel({ model, middleware: headroomMiddleware() })` |
+| LiteLLM | `litellm.callbacks = [HeadroomCallback()]` |
+| LangChain | `HeadroomChatModel(your_llm)` |
+| Agno | `HeadroomAgnoModel(your_model)` |
+| ASGI apps | `app.add_middleware(CompressionMiddleware)` |
+| Multi-agent | `SharedContext().put / .get` |
+| MCP clients | `headroom mcp install` |

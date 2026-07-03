@@ -1,0 +1,365 @@
+---
+title: "TypeScript HeadroomClient and SDK Wrapper Reference"
+sidebarTitle: "HeadroomClient"
+description: "Complete API reference for HeadroomClient, withHeadroom() wrappers, headroomMiddleware(), simulate(), format utilities, and the full error class hierarchy."
+---
+
+The Headroom TypeScript SDK ships a low-level HTTP client (`HeadroomClient`), drop-in wrappers for OpenAI and Anthropic SDKs (`withHeadroom()`), a Vercel AI SDK middleware (`headroomMiddleware()`), and a dry-run simulation helper (`simulate()`). All are available from the `headroom-ai` package.
+
+```bash
+npm install headroom-ai
+```
+
+---
+
+## HeadroomClient
+
+`HeadroomClient` is a typed HTTP client that speaks directly to the Headroom proxy. Use it when you want fine-grained control over compression, metrics, and retrieval without wrapping a provider SDK.
+
+### Constructor
+
+```typescript
+import { HeadroomClient } from "headroom-ai";
+
+const client = new HeadroomClient(options?: ExtendedClientOptions);
+```
+
+<ParamField body="baseUrl" type="string">
+  Proxy URL. Defaults to `HEADROOM_BASE_URL` env var or `http://localhost:8787`.
+</ParamField>
+
+<ParamField body="apiKey" type="string">
+  Bearer token for the proxy's inbound auth gate (`HEADROOM_PROXY_TOKEN`). Reads `HEADROOM_API_KEY` when unset.
+</ParamField>
+
+<ParamField body="timeout" type="number">
+  Request timeout in milliseconds. Defaults to `30000`.
+</ParamField>
+
+<ParamField body="fallback" type="boolean">
+  Return the original messages unmodified when the proxy is unreachable, instead of throwing. Defaults to `true`.
+</ParamField>
+
+<ParamField body="retries" type="number">
+  Retry attempts on recoverable errors (5xx, connection failures). Defaults to `1`.
+</ParamField>
+
+<ParamField body="providerApiKey" type="string">
+  Your upstream LLM provider key. Forwarded as `Authorization: Bearer` (OpenAI path) or `x-api-key` (Anthropic path) on passthrough requests.
+</ParamField>
+
+<ParamField body="config" type="HeadroomConfig">
+  Fine-grained compression configuration object. See the config type reference below.
+</ParamField>
+
+<ParamField body="stack" type="string">
+  Integration slug sent as `X-Headroom-Stack` on every request (e.g. `"adapter_ts_openai"`).
+</ParamField>
+
+### Core methods
+
+#### `client.compress(messages, options?)`
+
+Compress an array of OpenAI-format messages via `POST /v1/compress`.
+
+```typescript
+const result = await client.compress(messages, {
+  model: "gpt-4o",
+  tokenBudget: 50_000,
+});
+```
+
+Returns `Promise<CompressResult>`. See the [compress() reference](/api/typescript/compress) for the full return-type documentation.
+
+#### `client.chat.completions.create(params)`
+
+OpenAI-compatible passthrough — routes through `POST /v1/chat/completions` with automatic compression. Supports streaming.
+
+```typescript
+const response = await client.chat.completions.create({
+  model: "gpt-4o",
+  messages,
+  stream: false,
+  headroomMode: "optimize", // "audit" | "optimize" | "simulate"
+});
+```
+
+#### `client.messages.create(params)`
+
+Anthropic-compatible passthrough — routes through `POST /v1/messages` with automatic compression. Supports streaming.
+
+```typescript
+const response = await client.messages.create({
+  model: "claude-opus-4-5",
+  max_tokens: 1024,
+  messages,
+});
+```
+
+#### `client.health()`
+
+Check proxy liveness. Returns `Promise<HealthStatus>`.
+
+#### `client.proxyStats()`
+
+Fetch comprehensive proxy statistics from `GET /stats`. Returns `Promise<ProxyStats>`.
+
+#### `client.retrieve(hash, options?)`
+
+Retrieve original content from the CCR store by hash. Returns `Promise<RetrieveResult | RetrieveSearchResult>`.
+
+```typescript
+const content = await client.retrieve("abc123", { query: "function signature" });
+```
+
+#### `client.close()`
+
+No-op for the HTTP client; included for API parity with future WebSocket clients.
+
+---
+
+## withHeadroom()
+
+`withHeadroom()` wraps an existing OpenAI or Anthropic SDK instance so all API calls are silently compressed before reaching the provider. No code changes to call sites are required.
+
+### OpenAI
+
+```typescript
+import OpenAI from "openai";
+import { withHeadroom } from "headroom-ai/adapters/openai";
+
+const openai = withHeadroom(new OpenAI(), {
+  baseUrl: "http://localhost:8787",
+  model: "gpt-4o",
+});
+
+// All calls now route through Headroom compression
+const response = await openai.chat.completions.create({
+  model: "gpt-4o",
+  messages,
+});
+```
+
+### Anthropic
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import { withHeadroom } from "headroom-ai/adapters/anthropic";
+
+const anthropic = withHeadroom(new Anthropic(), {
+  baseUrl: "http://localhost:8787",
+});
+
+const response = await anthropic.messages.create({
+  model: "claude-opus-4-5",
+  max_tokens: 1024,
+  messages,
+});
+```
+
+---
+
+## headroomMiddleware()
+
+Integrates with the [Vercel AI SDK](https://sdk.vercel.ai) middleware pipeline. Compress context before every `streamText` or `generateText` call.
+
+```typescript
+import { streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { headroomMiddleware } from "headroom-ai/adapters/vercel-ai";
+
+const result = await streamText({
+  model: openai("gpt-4o"),
+  messages,
+  experimental_telemetry: { isEnabled: true },
+  middlewares: [
+    headroomMiddleware({
+      baseUrl: "http://localhost:8787",
+    }),
+  ],
+});
+```
+
+---
+
+## simulate()
+
+Dry-run compression — calls `POST /v1/compress` in simulate mode to preview what would happen without sending any request to an LLM.
+
+### Signature
+
+```typescript
+import { simulate } from "headroom-ai";
+
+const result = await simulate(messages, options?: SimulateOptions): Promise<SimulationResult>
+```
+
+### SimulateOptions
+
+<ParamField body="model" type="string">
+  Model name for token counting. Defaults to `"gpt-4o"`.
+</ParamField>
+
+<ParamField body="baseUrl" type="string">
+  Proxy URL. Defaults to `http://localhost:8787`.
+</ParamField>
+
+<ParamField body="apiKey" type="string">
+  Proxy bearer token. Reads `HEADROOM_API_KEY` when unset.
+</ParamField>
+
+<ParamField body="config" type="HeadroomConfig">
+  Override specific compression sub-system configuration.
+</ParamField>
+
+<ParamField body="client" type="HeadroomClient">
+  Re-use an existing `HeadroomClient` instance.
+</ParamField>
+
+### SimulationResult fields
+
+<ResponseField name="tokensBefore" type="number">
+  Estimated token count before compression.
+</ResponseField>
+
+<ResponseField name="tokensAfter" type="number">
+  Estimated token count after compression.
+</ResponseField>
+
+<ResponseField name="tokensSaved" type="number">
+  Estimated tokens saved.
+</ResponseField>
+
+<ResponseField name="estimatedSavings" type="string">
+  Human-readable savings summary (e.g. `"68% reduction"`).
+</ResponseField>
+
+<ResponseField name="transforms" type="string[]">
+  Which transforms would run.
+</ResponseField>
+
+<ResponseField name="wasteSignals" type="WasteSignals">
+  Detected patterns of context waste (redundant tool outputs, stale reads, etc.).
+</ResponseField>
+
+<ResponseField name="diffArtifact" type="DiffArtifact">
+  Structured diff showing exactly what would be removed.
+</ResponseField>
+
+```typescript
+const sim = await simulate(messages, { model: "gpt-4o" });
+console.log(`Would save ${sim.tokensSaved} tokens`);
+console.log("Transforms:", sim.transforms);
+```
+
+---
+
+## Format utilities
+
+### `detectFormat(messages)`
+
+Detect the message format of an array.
+
+```typescript
+import { detectFormat } from "headroom-ai";
+type MessageFormat = "openai" | "anthropic" | "vercel-ai" | "gemini";
+
+const fmt: MessageFormat = detectFormat(messages);
+```
+
+### `toOpenAI(messages)`
+
+Convert messages from any supported format to OpenAI format.
+
+```typescript
+import { toOpenAI } from "headroom-ai";
+const openaiMessages = toOpenAI(anthropicMessages);
+```
+
+### `fromOpenAI(messages, targetFormat)`
+
+Convert OpenAI-format messages back to a target format.
+
+```typescript
+import { fromOpenAI } from "headroom-ai";
+const anthropicMessages = fromOpenAI(openaiMessages, "anthropic");
+```
+
+---
+
+## Error classes
+
+All errors extend `HeadroomError` which extends the native `Error`. The `details` field carries structured context.
+
+```typescript
+import {
+  HeadroomError,
+  HeadroomConnectionError,
+  HeadroomAuthError,
+  HeadroomCompressError,
+  ConfigurationError,
+  ProviderError,
+  StorageError,
+  TokenizationError,
+  CacheError,
+  ValidationError,
+  TransformError,
+} from "headroom-ai";
+```
+
+| Class | HTTP status | When thrown |
+|---|---|---|
+| `HeadroomConnectionError` | — | Proxy is unreachable (ECONNREFUSED, timeout) |
+| `HeadroomAuthError` | 401 | Missing or invalid `HEADROOM_API_KEY` / proxy token |
+| `HeadroomCompressError` | 4xx / 5xx | Proxy returned an error; carries `.statusCode` and `.errorType` |
+| `ConfigurationError` | — | Invalid configuration |
+| `ProviderError` | — | Upstream LLM provider error |
+| `StorageError` | — | CCR store failure |
+| `TokenizationError` | — | Token counting failure |
+| `CacheError` | — | Semantic cache failure |
+| `ValidationError` | — | Request schema validation failure |
+| `TransformError` | — | An individual compression transform failure |
+
+### mapProxyError()
+
+Utility that maps raw HTTP status + error type string to the correct subclass:
+
+```typescript
+import { mapProxyError } from "headroom-ai";
+
+const error = mapProxyError(401, "auth_error", "Invalid token");
+// → HeadroomAuthError instance
+```
+
+---
+
+## HeadroomConfig type
+
+Pass a `HeadroomConfig` object to `HeadroomClient` or `simulate()` to override specific compression behaviors:
+
+```typescript
+import type { HeadroomConfig } from "headroom-ai";
+
+const config: HeadroomConfig = {
+  defaultMode: "optimize",
+  toolCrusher: {
+    enabled: true,
+    maxArrayItems: 20,
+    maxStringLength: 500,
+  },
+  smartCrusher: {
+    enabled: true,
+    similarityThreshold: 0.85,
+  },
+  ccr: {
+    enabled: true,
+    injectTool: true,
+  },
+  rollingWindow: {
+    keepLastTurns: 10,
+    outputBufferTokens: 2048,
+  },
+};
+```
+
+See `HeadroomConfig` and all sub-types (`ToolCrusherConfig`, `SmartCrusherConfig`, `CCRConfig`, `CacheAlignerConfig`, etc.) exported from `headroom-ai` for the full field list.

@@ -1,0 +1,376 @@
+---
+title: "Troubleshoot Common Headroom Issues"
+sidebarTitle: "Troubleshooting"
+description: "Diagnose and fix common Headroom issues: proxy not routing, SSL errors, $0.00 dollar savings, TypeScript SDK proxy requirement, and known limitations."
+---
+
+Headroom's failure mode is often silent — when a client is not routed through the proxy, everything still works, but you stop saving tokens. Start every investigation with `headroom doctor`, which correlates proxy liveness, client routing, version drift, and savings flow in one command.
+
+## Start Here: `headroom doctor`
+
+```bash
+headroom doctor              # Default port 8787
+headroom doctor --port 8080  # Non-default port
+headroom doctor --json       # JSON output for CI/scripts
+```
+
+Exit codes: `0` = all checks passed, `1` = warnings only, `2` = at least one failure.
+
+`headroom doctor` checks: proxy liveness, version drift (proxy vs. installed package), Claude routing (`~/.claude/settings.json`), Codex routing (`~/.codex/config.toml`), current shell `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`, savings flow (lifetime totals + last activity), and budget configuration. Fix anything flagged before digging deeper.
+
+## Common Issues
+
+<AccordionGroup>
+
+<Accordion title="Proxy not running or not routing traffic">
+
+**Symptom**: `headroom doctor` reports `proxy: ✗ fail — not reachable at http://127.0.0.1:8787`.
+
+**Cause**: The proxy process is not running, or it started on a different port.
+
+**Fix**:
+
+```bash
+# Start the proxy
+headroom proxy --port 8787
+
+# Or wrap your agent (starts the proxy automatically)
+headroom wrap claude
+headroom wrap codex
+
+# Check if another process is on the port
+lsof -i :8787
+
+# Try a different port
+headroom proxy --port 8788
+headroom doctor --port 8788
+```
+
+Even when the proxy is running, clients must be configured to route through it. `headroom wrap <tool>` handles this automatically. For manual setup:
+
+```bash
+# Claude Code
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+claude
+
+# OpenAI-compatible clients
+export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+your-app
+```
+
+Check the proxy is actually compressing by verifying savings are flowing:
+
+```bash
+curl http://127.0.0.1:8787/stats | jq '.session.tokens_saved_total'
+```
+
+</Accordion>
+
+<Accordion title="CERTIFICATE_VERIFY_FAILED during installation (SSL inspection)">
+
+**Symptom**: `pip install "headroom-ai[all]"` fails with:
+
+```
+CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
+```
+
+**Cause**: Your network uses SSL inspection (a corporate MITM proxy presenting a company-issued CA). The build backend (`maturin`) downloads `rustup` over a connection your TLS stack does not trust.
+
+**Fix**: Install Rust first so the build does not need to fetch it:
+
+```bash
+# macOS / Linux
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && rustup default stable
+
+# Windows
+winget install Rustlang.Rustup && rustup default stable
+```
+
+Restart your shell, then retry `pip install "headroom-ai[all]"`.
+
+Alternatively, use a prebuilt wheel — this avoids the Rust build entirely:
+
+```bash
+pip install --only-binary headroom-ai "headroom-ai[all]"
+```
+
+Prebuilt wheels are published for Windows (`win_amd64`), Linux (`x86_64` / `aarch64`), and macOS (Apple Silicon). The Rust toolchain is only required for the platform-independent sdist fallback (e.g., Intel macOS).
+
+Two runtime assets are also fetched over TLS. If they are blocked, trust your corporate CA via `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`:
+
+- **`cdn.pyke.io`** — ONNX Runtime for the Rust core. Pre-provide with `ORT_STRATEGY=system` and `ORT_LIB_LOCATION=/path/to/onnxruntime` to skip the download.
+- **`huggingface.co`** — the `kompress-base` compression model. Pre-download it and run with `HF_HUB_OFFLINE=1`, or set `HF_ENDPOINT` to a trusted mirror.
+
+</Accordion>
+
+<Accordion title="&quot;Basic Constraints of CA cert not marked critical&quot; (Zscaler / Netskope)">
+
+**Symptom**: TLS fails at runtime — not during install — with:
+
+```
+[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+Basic Constraints of CA cert not marked critical
+```
+
+**Cause**: This is a **different** failure from the install-time `CERTIFICATE_VERIFY_FAILED` above. Python 3.13 + OpenSSL 3.x enable `VERIFY_X509_STRICT` by default, which enforces RFC 5280 §4.2.1.9: a CA certificate's `basicConstraints` extension must be marked *critical*. Inspection roots like Zscaler set `CA:TRUE` without the critical bit, so the chain is rejected. Adding the CA to a bundle does not help — it is already found and trusted; it just fails strict validation.
+
+**Fix**: Set `HEADROOM_TLS_STRICT=0` to clear only the strict flag from every TLS context Headroom controls:
+
+```bash
+HEADROOM_TLS_STRICT=0 headroom proxy --port 8787
+```
+
+This affects the proxy's httpx upstream client **and** the urllib3/`huggingface_hub` path used for model downloads. Chain validation, signature checking, certificate expiry, and hostname verification all remain enabled — this is strictly narrower than disabling verification.
+
+<Note>
+The Rust core's ONNX download (`cdn.pyke.io`) uses a separate TLS stack (rustls / OS trust store) that `HEADROOM_TLS_STRICT` does not affect. On Windows, the corporate root must be in the **machine** certificate store. Alternatively, pre-provision ONNX Runtime with `ORT_STRATEGY=system` + `ORT_LIB_LOCATION=/path/to/onnxruntime` to skip the download entirely.
+</Note>
+
+</Accordion>
+
+<Accordion title="Python 3.14+: dollar savings show $0.00">
+
+**Symptom**: Token savings track correctly, but the **Proxy $ Saved** tile in the dashboard and `headroom savings` always show `$0.00`.
+
+**Cause**: Headroom prices saved tokens using [LiteLLM](https://github.com/BerriAI/litellm). LiteLLM cannot be installed on Python 3.14+, so no dollar calculation is possible.
+
+**Fix**: Use Python 3.13, which is supported by LiteLLM:
+
+```bash
+# Check your current Python version
+python --version
+
+# If using pipx, reinstall with Python 3.13
+pipx reinstall headroom-ai --python python3.13
+
+# If using pip/venv, recreate the environment with Python 3.13
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install "headroom-ai[all]"
+```
+
+After switching, restart the proxy. Token savings are never affected — only the dollar pricing requires LiteLLM.
+
+</Accordion>
+
+<Accordion title="TypeScript SDK: needs proxy running">
+
+**Symptom**: TypeScript `compress()` calls fail or return uncompressed content. No `headroom` CLI command is available.
+
+**Cause**: The npm `headroom-ai` package is a **library only** — it does not ship a CLI or a bundled compression engine. The TypeScript SDK routes compression requests to a running Headroom proxy.
+
+**Fix**:
+
+1. Install the Python package to get the proxy and CLI:
+
+   ```bash
+   pip install "headroom-ai[proxy]"
+   ```
+
+2. Start the proxy:
+
+   ```bash
+   headroom proxy --port 8787
+   ```
+
+3. Point the TypeScript SDK at it:
+
+   ```bash
+   export HEADROOM_BASE_URL=http://localhost:8787
+   ```
+
+   Or pass it in the constructor:
+
+   ```ts
+   import { HeadroomClient } from 'headroom-ai';
+
+   const client = new HeadroomClient({
+     baseUrl: 'http://localhost:8787',
+   });
+   ```
+
+The TypeScript SDK reads `HEADROOM_BASE_URL` automatically, so setting the environment variable is sufficient for most setups.
+
+</Accordion>
+
+<Accordion title="pipx installs an older version or fails with Python version mismatch">
+
+**Symptom**: `pipx install headroom-ai` or `pipx upgrade headroom-ai` installs an older version than what PyPI shows, or fails with `No matching distribution found`.
+
+**Cause**: `pipx` resolves packages inside its own virtual environment. If that environment uses a Python version that Headroom does not publish wheels for, pip skips newer releases and chooses the newest compatible build it can find.
+
+**Diagnosis**:
+
+```bash
+pipx list    # See which Python version pipx is using
+```
+
+**Fix**: Install or reinstall with an explicitly supported Python version (3.10–3.13):
+
+```bash
+pipx install --python python3.13 "headroom-ai[all]"
+```
+
+For a pinned release:
+
+```bash
+pipx install --python python3.13 "headroom-ai[all]==0.21.4"
+```
+
+If Headroom is already installed via pipx, uninstall it first:
+
+```bash
+pipx uninstall headroom-ai
+pipx install --python python3.13 "headroom-ai[all]"
+```
+
+<Warning>
+**Pick Python 3.13 for dollar savings.** The dashboard's *Proxy $ Saved* tile requires LiteLLM, which does not support Python 3.14+. Token savings track on all supported versions (3.10–3.14), but dollar figures require ≤3.13.
+</Warning>
+
+</Accordion>
+
+<Accordion title="Build fails: Rust toolchain required for sdist">
+
+**Symptom**: `pip install headroom-ai` fails with a Rust/Cargo compilation error such as:
+
+```
+error: could not find `Cargo.toml` in ...
+```
+
+or a C++ compilation error.
+
+**Cause**: No prebuilt wheel is available for your platform (typically Intel macOS or an unusual Linux variant). pip falls back to building from the source distribution (sdist), which requires a Rust toolchain for the Rust core (`maturin`).
+
+**Fix**: Install Rust first:
+
+```bash
+# macOS / Linux
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustup default stable
+
+# Windows
+winget install Rustlang.Rustup
+rustup default stable
+```
+
+Then retry the install. Prebuilt wheels are available for `win_amd64`, Linux `x86_64` / `aarch64`, and Apple Silicon — only Intel macOS and unusual Linux configurations need a local Rust toolchain.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Known Limitations
+
+These behaviors are intentional, not bugs:
+
+<AccordionGroup>
+
+<Accordion title="Code compression passes through — this is intentional">
+
+**Symptom**: Python source files, TypeScript code, and other code read by the agent are not compressed. `headroom perf` shows 0% savings on `Read` tool outputs.
+
+**Why this is intentional**: Headroom includes an AST-aware CodeCompressor (tree-sitter, 8 languages), but it is gated by safety protections that prevent it from firing on content you are actively working with:
+
+1. **Recent code protection** (`protect_recent_code=4`): Code in the last 4 messages is never compressed.
+2. **Analysis intent protection** (`protect_analysis_context=True`): If the most recent user message contains keywords like `analyze`, `review`, `explain`, `fix`, or `debug`, all code in the conversation is protected.
+3. **Word count gate**: Content under 50 words is skipped.
+
+This is the correct default — code is almost always read because the agent needs to work with it. Compressing function bodies would remove exactly what it needs.
+
+**Where code savings do come from**: Headroom compresses code only in the *live zone* — the newest tool outputs — with the AST-aware CodeCompressor, while keeping recent and analysis-context code fully intact.
+
+**Override**: Set `protect_analysis_context=False` in `ContentRouterConfig` for aggressive code compression. Requires `headroom-ai[code]` for tree-sitter.
+
+</Accordion>
+
+<Accordion title="grep results show 0% compression — this is intentional">
+
+**Symptom**: `Grep` tool outputs show 0% compression in `headroom perf`.
+
+**Why this is intentional**: grep results are already a compact structured format — each line is a file path, line number, and matched text. There is no JSON array structure to statistically sample, no redundant boilerplate to strip, and no safe way to drop results without risking that the dropped line was the one the agent needed.
+
+SmartCrusher's minimum-items threshold (`min_items_to_analyze=5`) and token threshold (`min_tokens_to_crush=200`) also protect grep results from lossy compression.
+
+`Grep` is in the default `exclude_tools` list (`DEFAULT_EXCLUDE_TOOLS`) alongside `Read`, `Glob`, `Write`, and `Edit`. These tools return exact content the agent needs for edits — compressing them would break the edit workflow.
+
+To protect additional tools, use `--protect-tool-results`:
+
+```bash
+headroom proxy --protect-tool-results Bash,WebFetch
+```
+
+Or set `HEADROOM_PROTECT_TOOL_RESULTS=Bash,WebFetch`.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Other Known Issues
+
+<AccordionGroup>
+
+<Accordion title="Claude Code context window grows larger through the proxy">
+
+**Symptom**: After pointing Claude Code at Headroom (`ANTHROPIC_BASE_URL`), `/context all` shows **more** tokens used than a direct session — especially in the "System tools" and "MCP tools" lines.
+
+**Cause**: Claude Code normally defers most tool schemas behind its server-side **Tool Search Tool** — it sends only tool names and loads full schemas on demand. It enables this only when it believes it is talking directly to `api.anthropic.com`. With a custom `ANTHROPIC_BASE_URL`, Claude Code falls back to eagerly materializing every tool schema into the local context window. This happens client-side before the request reaches the proxy.
+
+**Fix**: Set `ENABLE_TOOL_SEARCH` so Claude Code keeps deferring tools through the proxy:
+
+```bash
+# Easiest: headroom wrap sets ENABLE_TOOL_SEARCH=true automatically
+headroom wrap claude
+
+# Manual setup
+ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=http://localhost:8787 claude
+```
+
+</Accordion>
+
+<Accordion title="Windows: ML content detection hangs or silently falls back">
+
+**Symptom**: On Windows 11 24H2+, requests stall or the proxy logs `magika ONNX session init timed out`. Compression quality may drop.
+
+**Cause**: Without `ORT_DYLIB_PATH` pinned, the Windows DLL search resolves `onnxruntime.dll` to the Windows ML OS component (`C:\Windows\System32\onnxruntime.dll`, version 1.17.x), which deadlocks ONNX session initialization.
+
+**Fix**: Headroom pins `ORT_DYLIB_PATH` automatically at import time to the DLL inside the `onnxruntime` pip package. Confirm in the startup log:
+
+```
+Pinned ORT_DYLIB_PATH to bundled ONNX Runtime: ...\onnxruntime\capi\onnxruntime.dll
+```
+
+If the pin is skipped (e.g., installed without `onnxruntime`):
+
+```powershell
+pip install onnxruntime
+# or
+$env:ORT_DYLIB_PATH = "C:\path\to\onnxruntime.dll"
+```
+
+`HEADROOM_MAGIKA_INIT_TIMEOUT_SECS` (default `5`) bounds the init as a safety net — on timeout, detection degrades to non-ML tiers for the process lifetime.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Getting Help
+
+<CardGroup cols={2}>
+  <Card title="Discord Community" icon="discord" href="https://discord.gg/yRmaUNpsPJ">
+    Join the Headroom Discord for questions, feedback, and war stories from other users.
+  </Card>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/chopratejas/headroom/issues">
+    File a bug or feature request. Include your Headroom version, Python version, provider, and a minimal reproduction.
+  </Card>
+</CardGroup>
+
+When filing a GitHub issue, include:
+
+1. **Headroom version**: `headroom --version`
+2. **Python version**: `python --version`
+3. **Provider**: Anthropic, OpenAI, Bedrock, etc.
+4. **`headroom doctor --json` output** (redact API keys)
+5. **Debug log output** — run with `headroom proxy --log-file ~/.headroom/logs/proxy.jsonl --log-messages` and include the relevant lines
+6. **Minimal reproduction** — the smallest message array that triggers the issue

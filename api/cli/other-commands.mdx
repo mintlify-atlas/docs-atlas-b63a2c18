@@ -1,0 +1,203 @@
+---
+title: "headroom CLI Utility Commands Reference"
+sidebarTitle: "Utilities"
+description: "Reference for headroom doctor, perf, savings, output-savings, dashboard, update, init, copilot-auth, and capture CLI commands."
+---
+
+Headroom ships a set of utility commands for diagnosing your setup, tracking savings, managing updates, and configuring persistent installations. These commands complement the main `proxy`, `wrap`, `mcp`, and `learn` commands.
+
+## headroom doctor
+
+`headroom doctor` diagnoses whether your local Headroom setup is routing traffic and saving tokens. Because Headroom's failure mode is silent (the client still works, you just stop saving tokens), this command correlates everything that matters: the proxy process, per-client wrap configs, the current shell environment, savings flow, and budget configuration.
+
+```bash
+headroom doctor
+```
+
+**Exit codes:**
+- `0` — all checks pass
+- `1` — warnings only (setup works but could be improved)
+- `2` — one or more failures (traffic is not being compressed)
+
+**Checks performed:**
+
+| Check | What it verifies |
+|---|---|
+| Proxy process | A Headroom proxy is running and healthy |
+| Claude Code config | `ANTHROPIC_BASE_URL` points to the proxy |
+| Codex config | `base_url` in Codex config points to the proxy |
+| Shell environment | Relevant env vars are set correctly |
+| Savings flow | Tokens are actually being saved (non-zero) |
+| Budget config | Budget limit is configured if set |
+| Proxy version | Running proxy matches installed version |
+
+Run `headroom doctor` after `headroom wrap` to confirm routing is working.
+
+---
+
+## headroom perf
+
+`headroom perf` prints a detailed performance report showing compression latency, throughput, and per-compressor statistics for the current session.
+
+```bash
+headroom perf
+```
+
+The report includes per-compressor timing (SmartCrusher, CodeCompressor, Kompress), average compression ratio, and session-level throughput in tokens per second.
+
+---
+
+## headroom savings
+
+`headroom savings` prints a cumulative savings report for all sessions recorded in the local savings ledger.
+
+```bash
+headroom savings
+headroom savings --since 7d      # last 7 days
+headroom savings --format json   # machine-readable output
+```
+
+<ParamField query="--since" type="string">
+  Filter to sessions within a time window. Accepts relative values like `1d`, `7d`, `30d` or an ISO date.
+</ParamField>
+
+<ParamField query="--format" type="string" default="table">
+  Output format. `table` (default) or `json`.
+</ParamField>
+
+The report shows tokens saved, estimated dollar savings (requires Python 3.13 and LiteLLM), compression ratio, and number of requests processed.
+
+<Note>
+Dollar savings use LiteLLM's pricing database, which requires Python 3.13 or earlier. On Python 3.14+, the dollar figure shows `$0.00` while token savings still track correctly.
+</Note>
+
+---
+
+## headroom output-savings
+
+`headroom output-savings` estimates how many output tokens were saved by verbosity steering and effort routing. Because output savings are counterfactual (we never see what the model *would* have written), this command reports an honest estimate with a confidence interval rather than a single number.
+
+```bash
+headroom output-savings
+# Reduction: 31.7%  (95% CI 27.7% … 35.7%)   [estimated]
+```
+
+If you've set `HEADROOM_OUTPUT_HOLDOUT=0.1` to run a control group, the result is labeled `measured` instead of `estimated`:
+
+```bash
+export HEADROOM_OUTPUT_HOLDOUT=0.1
+headroom proxy --port 8787
+# ... after some usage ...
+headroom output-savings
+# Reduction: 28.4%  (95% CI 24.1% … 32.7%)   [measured, n=42 control]
+```
+
+See [Output Token Reduction](/features/output-token-reduction) for full details.
+
+---
+
+## headroom dashboard
+
+`headroom dashboard` opens a live savings dashboard in your terminal. The proxy must be running.
+
+```bash
+headroom dashboard
+headroom dashboard --port 8080   # if running on a non-default port
+```
+
+<ParamField query="--port" type="integer" default="8787">
+  Port the proxy is running on.
+</ParamField>
+
+The dashboard shows:
+- Input tokens saved (live, per request)
+- Output tokens saved (if `HEADROOM_OUTPUT_SHAPER=1`)
+- Compression ratio over time
+- Per-agent savings breakdown
+- Dollar savings (labeled `measured` or `estimated`)
+
+The same data is available as a browser dashboard at `http://localhost:8787/dashboard` when the proxy is running.
+
+---
+
+## headroom update
+
+`headroom update` detects how Headroom was installed (pip, pipx, or uv tool) and upgrades in place.
+
+```bash
+headroom update            # upgrade to latest stable
+headroom update --check    # print latest version, don't upgrade
+headroom update --pre      # include pre-release versions
+```
+
+<ParamField query="--check" type="boolean">
+  Report the latest available version without performing the upgrade.
+</ParamField>
+
+<ParamField query="--pre" type="boolean">
+  Include pre-release versions when checking or upgrading.
+</ParamField>
+
+For git checkouts, editable installs, Docker images, and externally-managed system Pythons (PEP 668), `headroom update` prints the correct manual step instead of guessing.
+
+The proxy shows a one-line "update available" notice on startup (at most once per day, non-blocking). Opt out with `HEADROOM_UPDATE_CHECK=off`.
+
+---
+
+## headroom init / headroom install apply
+
+`headroom init` generates a persistent service configuration (systemd unit, launchd plist, or Windows Service) for running the proxy as a background service.
+
+```bash
+headroom init                   # generate config for current platform
+headroom init --port 8787       # custom port
+headroom install apply          # install and start the generated service
+headroom install status         # check service status
+headroom install stop           # stop the service
+headroom install remove         # uninstall the service
+```
+
+<ParamField query="--port" type="integer" default="8787">
+  Port for the persistent proxy service.
+</ParamField>
+
+---
+
+## headroom copilot-auth
+
+`headroom copilot-auth` manages a Headroom-specific GitHub OAuth token for GitHub Copilot CLI subscription mode.
+
+```bash
+headroom copilot-auth login    # authenticate with GitHub
+headroom copilot-auth logout   # remove stored token
+headroom copilot-auth status   # show token validity
+```
+
+The stored token is separate from the generic GitHub or Copilot CLI tokens. It is used by `headroom wrap copilot --subscription` to exchange for Copilot's short-lived API token and locate the upstream endpoint.
+
+See [Agent Wrap](/guides/agent-wrap) for the full Copilot subscription setup flow.
+
+---
+
+## headroom agent-savings
+
+`headroom agent-savings` prints a savings breakdown by agent (Claude Code, Codex, Cursor, etc.) for the current session ledger.
+
+```bash
+headroom agent-savings
+headroom agent-savings --format json
+```
+
+---
+
+## headroom capture
+
+`headroom capture` manually records a session or set of messages into the savings ledger without routing through the proxy. Useful for auditing or testing.
+
+```bash
+headroom capture --file messages.json
+```
+
+<ParamField query="--file" type="string" required>
+  Path to a JSON file containing the messages array to record.
+</ParamField>

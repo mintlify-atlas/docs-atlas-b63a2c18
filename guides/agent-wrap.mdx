@@ -1,0 +1,189 @@
+---
+title: "Wrap AI Coding Agents with Headroom in One Command"
+sidebarTitle: "Agent Wrap"
+description: "Run headroom wrap to start the local proxy and launch Claude Code, Codex, Aider, Cursor, or more with context compression pre-configured in one command."
+---
+
+`headroom wrap` is the fastest path to context savings for AI coding agents. One command starts the local proxy, configures the right environment variables for the target agent, and launches it — no manual env-var juggling, no config file edits.
+
+## Wrapping Claude Code
+
+<Steps>
+  <Step title="Install Headroom">
+    ```bash
+    pip install "headroom-ai[all]"
+    ```
+  </Step>
+  <Step title="Wrap Claude Code">
+    ```bash
+    headroom wrap claude
+    ```
+    This starts the proxy on port 8787, installs the RTK context tool, and launches `claude` with `ANTHROPIC_BASE_URL` pointing at the proxy.
+  </Step>
+  <Step title="Verify setup">
+    ```bash
+    headroom doctor
+    ```
+    Runs a health check confirming that routing, compression, and (if enabled) memory are working correctly.
+  </Step>
+  <Step title="See savings">
+    ```bash
+    headroom dashboard   # live savings dashboard
+    headroom perf        # CLI savings summary
+    ```
+  </Step>
+</Steps>
+
+## Supported agents
+
+```bash
+headroom wrap claude      # Claude Code
+headroom wrap codex       # OpenAI Codex CLI
+headroom wrap cursor      # Cursor (starts proxy, prints base URLs to paste into settings)
+headroom wrap aider       # Aider
+headroom wrap copilot     # GitHub Copilot CLI
+headroom wrap cline       # Cline
+headroom wrap continue    # Continue
+headroom wrap goose       # Goose
+headroom wrap openhands   # OpenHands
+headroom wrap opencode    # OpenCode
+headroom wrap openclaw    # OpenClaw
+headroom wrap vibe        # Mistral Vibe
+```
+
+### Compatibility matrix
+
+| Agent | `headroom wrap` | Notes |
+|---|:---:|---|
+| Claude Code | ✅ | `--memory` · `--code-graph` · `--1m` · `--tool-search` |
+| Codex | ✅ | Shares memory with Claude |
+| Cursor | Manual setup | Starts proxy and prints base URLs for Cursor settings |
+| Aider | ✅ | Starts proxy + launches |
+| Copilot CLI | ✅ | Starts proxy + launches |
+| OpenClaw | ✅ | Installs as ContextEngine plugin |
+| OpenCode | ✅ | Injects config · starts proxy + launches |
+| Cline | ✅ | Starts proxy + injects config |
+| Continue | ✅ | Starts proxy + injects config |
+| Goose | ✅ | Starts proxy + launches |
+| OpenHands | ✅ | Starts proxy + launches |
+| Mistral Vibe | ✅ | Starts proxy + launches |
+| Cortex Code | Library only | 60–65 % savings (library mode; no `wrap`) |
+
+Any OpenAI-compatible client works via `headroom proxy` without a dedicated `wrap` command. MCP-native agents: `headroom mcp install`.
+
+## Flags
+
+### Common flags
+
+| Flag | Description |
+|---|---|
+| `--port PORT` | Proxy port (default: `8787`) |
+| `--no-context-tool` | Skip installing the CLI context tool (RTK or lean-ctx) |
+| `--memory` | Enable persistent memory |
+| `--code-graph` | Index the current project and watch for live reindexing |
+| `--1m` | Enable 1M context window for Claude Code (entitled subscription users) |
+| `--tool-search VALUE` | Set `ENABLE_TOOL_SEARCH` for Claude Code tool deferral (`true`, `false`, `auto`, `auto:N`) |
+| `--learn` | Enable live traffic learning (implies `--memory`) |
+| `--no-proxy` | Skip starting a new proxy if one is already running |
+
+### Context tool selection
+
+`headroom wrap` installs a CLI context tool alongside the agent. Two tools are supported:
+
+```bash
+# Default: RTK (Rust Token Killer — git show --short, scoped ls, summarized installers)
+headroom wrap claude
+
+# lean-ctx (CLI commands, MCP tools, editor rules)
+HEADROOM_CONTEXT_TOOL=lean-ctx headroom wrap claude
+```
+
+Set `HEADROOM_CONTEXT_TOOL=rtk` (default) or `HEADROOM_CONTEXT_TOOL=lean-ctx` before running `wrap`. The value is inherited by the proxy subprocess.
+
+## Undoing a wrap
+
+```bash
+headroom unwrap claude     # Claude Code
+headroom unwrap codex      # Codex
+headroom unwrap opencode   # OpenCode
+headroom unwrap openclaw   # OpenClaw
+headroom unwrap copilot    # Copilot CLI (durable wrapping only)
+```
+
+`headroom unwrap` reverses the config changes made by `wrap`: removes the proxy-routing env vars from agent config files, restores backups where available, and optionally stops the local proxy.
+
+<Note>
+  `unwrap` only reverses *durable* config changes. Agents that are launched ephemerally (Aider, Goose, OpenHands, Vibe) don't write persistent config, so no `unwrap` is needed — just stop the process.
+</Note>
+
+## headroom doctor
+
+```bash
+headroom doctor
+```
+
+Runs a comprehensive health check:
+- Proxy reachability on the configured port
+- Compression pipeline initialization
+- Context tool installation status
+- Memory backend (if enabled)
+- API key presence for the configured provider
+
+## GitHub Copilot subscription mode
+
+Headroom can route GitHub Copilot CLI *subscription* traffic through the local proxy, applying the same compression pipeline before forwarding to GitHub Copilot's hosted API.
+
+```bash
+# 1. Authenticate — stores a Headroom-specific Copilot OAuth token
+headroom copilot-auth login
+
+# 2. Wrap with subscription mode
+headroom wrap copilot --subscription -- --model gpt-4o
+```
+
+The wrapper exchanges Headroom's reusable GitHub OAuth token for Copilot's short-lived API token and prints the upstream endpoint as `COPILOT_PROVIDER_API_URL=...` during launch.
+
+### GitHub Enterprise
+
+For GitHub Enterprise Server or custom-domain Copilot deployments, set the deployment domain before launching:
+
+```bash
+export GITHUB_COPILOT_ENTERPRISE_DOMAIN=ghe.example.com
+headroom wrap copilot --subscription
+```
+
+For GitHub.com Enterprise Cloud URLs such as `github.com/enterprises/your-enterprise`, do **not** set an enterprise-domain override. Headroom uses GitHub's normal token-exchange endpoint and the Copilot API endpoint advertised for the signed-in account.
+
+<Warning>
+  macOS auth reuse via Copilot CLI Keychain storage has been smoke-tested. Windows Credential Manager, Linux Secret Service, and Docker/CI token-injection paths are implemented but still need full OS validation. For Docker and CI environments, prefer passing an explicit `GITHUB_COPILOT_TOKEN` or `GITHUB_COPILOT_GITHUB_TOKEN` rather than relying on host keychain access.
+</Warning>
+
+## Passing extra arguments to the agent
+
+Use `--` to pass flags through to the wrapped agent:
+
+```bash
+headroom wrap claude -- --model opus
+headroom wrap copilot -- --model gpt-4o
+headroom wrap aider -- --no-auto-commits
+```
+
+## Custom proxy port
+
+```bash
+headroom wrap claude --port 9999
+# Equivalent to:
+ANTHROPIC_BASE_URL=http://127.0.0.1:9999 claude
+```
+
+## Cursor manual setup
+
+`headroom wrap cursor` starts the proxy and prints the base URLs to paste into Cursor's model settings. Cursor reads model endpoints from its settings UI, so the wrap command cannot rewrite Cursor configuration directly.
+
+```bash
+headroom wrap cursor
+# Output:
+#   Anthropic base URL: http://127.0.0.1:8787
+#   OpenAI base URL:    http://127.0.0.1:8787/v1
+# Paste these into Cursor Settings → Models → API Keys / Base URLs
+```

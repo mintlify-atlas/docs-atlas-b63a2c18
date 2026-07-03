@@ -1,0 +1,239 @@
+---
+title: "Headroom Architecture: Full Pipeline and Entry Points"
+sidebarTitle: "Architecture"
+description: "Full walkthrough of Headroom's pipeline lifecycle, three entry points, transform stages, provider-specific behavior, and extension seams."
+---
+
+Headroom sits between your application and the LLM provider. It intercepts outgoing messages, compresses them through a deterministic pipeline, and forwards the optimized request. The provider's response comes back unchanged. Every entry point — SDK wrapper, proxy, and framework integrations — feeds into the same canonical pipeline with the same lifecycle guarantees.
+
+## Full Pipeline Diagram
+
+```text
++-----------------------------------------------------------------------+
+|                          YOUR APPLICATION                             |
+|  Claude Code · Cursor · Codex · LangChain · Agno · your own code…    |
++-----------------------------------------------------------------------+
+         │  prompts · tool outputs · logs · RAG results · files
+         ▼
++-----------------------------------------------------------------------+
+|                    HEADROOM  (runs locally — data never leaves)       |
+|                                                                       |
+|  ┌──────────────┐   ┌─────────────────────────────────────────────┐  |
+|  │  CacheAligner│──▶│  ContentRouter                              │  |
+|  │              │   │    ├─ SmartCrusher   (JSON arrays)          │  |
+|  │  Detects     │   │    ├─ CodeCompressor (AST, tree-sitter)     │  |
+|  │  volatile    │   │    ├─ LogCompressor  (build / test logs)    │  |
+|  │  tokens;     │   │    └─ Kompress-v2-base (prose, HF model)   │  |
+|  │  warns if    │   └─────────────────────────────────────────────┘  |
+|  │  prefix is   │                      │                             |
+|  │  unstable    │                      ▼                             |
+|  └──────────────┘   ┌─────────────────────────────────────────────┐  |
+|                     │  CCR — Compress-Cache-Retrieve               │  |
+|                     │  Originals cached locally; LLM retrieves     │  |
+|                     │  via headroom_retrieve tool call             │  |
+|                     └─────────────────────────────────────────────┘  |
+|                                                                       |
+|  Cross-agent memory  ·  headroom learn  ·  MCP server                |
++-----------------------------------------------------------------------+
+         │  compressed prompt  +  retrieval tool
+         ▼
++-----------------------------------------------------------------------+
+|              LLM PROVIDER  (Anthropic · OpenAI · Bedrock · …)        |
++-----------------------------------------------------------------------+
+```
+
+## Three Entry Points
+
+All three entry points share the same pipeline and lifecycle. Choose based on how much control you want and how many code changes you're willing to make.
+
+<CardGroup cols={3}>
+  <Card title="SDK Mode" icon="code">
+    Wrap your LLM client with `HeadroomClient`. Minimal code changes — swap the client constructor.
+
+    ```python
+    from headroom import compress
+
+    result = compress(messages, model="gpt-4o")
+    # result.messages, result.tokens_saved
+    ```
+  </Card>
+  <Card title="Proxy Mode" icon="server">
+    Run `headroom proxy --port 8787` and point your existing client at `localhost:8787`. Zero code changes — just update the base URL.
+
+    ```bash
+    headroom proxy --port 8787
+    # or wrap a coding agent:
+    headroom wrap claude
+    ```
+  </Card>
+  <Card title="Integrations" icon="plug">
+    Drop-in adapters for LangChain, Vercel AI SDK, Agno, LiteLLM, and ASGI middleware. Framework-specific setup, same pipeline underneath.
+
+    ```python
+    # LangChain
+    from headroom.integrations import HeadroomChatModel
+    llm = HeadroomChatModel(your_llm)
+
+    # Vercel AI SDK
+    wrapLanguageModel({ model, middleware: headroomMiddleware() })
+    ```
+  </Card>
+</CardGroup>
+
+## The Transform Pipeline
+
+Headroom exposes one stable **request lifecycle** across `compress()`, the SDK, and the proxy. Every request transitions through these stages in order:
+
+```text
+Setup → Pre-Start → Post-Start → Input Received → Input Cached
+      → Input Routed → Input Compressed → Input Remembered
+      → Pre-Send → Post-Send → Response Received
+```
+
+These map to `PipelineStage` enum values in `headroom/pipeline.py`:
+
+| Stage | What happens |
+|---|---|
+| `SETUP` | Pipeline initialization, provider detection |
+| `PRE_START` | Pre-flight checks, rate limiting |
+| `POST_START` | Session context loaded |
+| `INPUT_RECEIVED` | Raw messages ingested; extension hooks may rewrite them |
+| `INPUT_CACHED` | Provider KV cache state checked; frozen prefix identified |
+| `INPUT_ROUTED` | ContentRouter assigns a compressor to each message block |
+| `INPUT_COMPRESSED` | Compressors run; CCR originals cached; metrics captured |
+| `INPUT_REMEMBERED` | Cross-agent memory consulted; SharedContext updated |
+| `PRE_SEND` | Final message array assembled; provider headers added |
+| `POST_SEND` | Request sent to provider; streaming begins |
+| `RESPONSE_RECEIVED` | Response intercepted; CCR tool calls handled |
+
+### Stage 1: CacheAligner (prefix stabilization)
+
+`CacheAligner` runs first, before any compression, so it can measure the stable prefix before it's potentially altered. It detects volatile tokens (UUIDs, ISO 8601 timestamps, JWTs, hex hashes) in system messages and emits warnings. The prompt itself is never modified.
+
+```text
+Before: "You are helpful. Current Date: 2025-06-15"
+         ─────────────────────────────────────────
+         Changes daily → cache miss every request
+
+Warning: [CacheAligner] system prompt contains 1 volatile token (iso8601: "2025-06-15")
+         Prefix will not cache. Move dynamic content to the message tail.
+```
+
+### Stage 2: SmartCrusher / ContentRouter (content compression)
+
+`ContentRouter` dispatches each message block to the optimal compressor (see [How Compression Works](/concepts/how-compression-works)). This is where the bulk of token savings happen:
+
+- **SmartCrusher** for JSON arrays: field-level statistical analysis, Kneedle algorithm, anomaly/error preservation.
+- **CodeCompressor** for source code: AST parsing via tree-sitter, syntax-valid output.
+- **LogCompressor** for build/test logs: pattern clustering, error line preservation.
+- **Kompress-v2-base** for plain text: ONNX INT8 ModernBERT inference.
+
+## Provider-Specific Behavior
+
+Provider and tool-specific behavior is isolated under `headroom/providers/` so the core orchestration stays focused on lifecycle and policy.
+
+```text
+headroom/providers/
+  ├── anthropic/     — cache_control injection, streaming handler, batch API
+  ├── openai/        — prefix caching alignment, tool normalization
+  ├── gemini/        — CachedContent API lifecycle management
+  ├── claude/        — CLI/tool slices for headroom wrap claude
+  ├── copilot/       — GitHub Copilot CLI subscription routing
+  ├── codex/         — Codex-specific memory sharing
+  ├── openclaw/      — ContextEngine plugin integration
+  └── registry.py    — Backend selection and runtime dispatch
+```
+
+Each provider slice handles: API target normalization, backend selection, transport dispatch, and provider-specific response parsing. Core files (`client.py`, `cli/proxy.py`, `proxy/server.py`) delegate entirely to provider slices.
+
+## Pipeline Extensions
+
+Headroom exposes two extension seams for customizing the lifecycle without forking core code.
+
+### `on_pipeline_event()` — PipelineExtension protocol
+
+Register an extension that receives every `PipelineEvent` as it fires:
+
+```python
+from headroom.pipeline import PipelineExtension, PipelineEvent, PipelineStage
+
+class MyExtension:
+    def on_pipeline_event(self, event: PipelineEvent) -> PipelineEvent | None:
+        if event.stage == PipelineStage.INPUT_COMPRESSED:
+            tokens_before = event.metadata.get("tokens_before", 0)
+            tokens_after = event.metadata.get("tokens_after", 0)
+            print(f"Compressed: {tokens_before} → {tokens_after} tokens")
+        return event  # return None to leave event unchanged
+```
+
+Extensions are discovered automatically via Python entry points (group `headroom.pipeline_extension`) or passed directly:
+
+```python
+from headroom import compress
+from headroom.config import HeadroomConfig
+
+result = compress(
+    messages,
+    model="gpt-4o",
+    hooks=MyExtension(),  # passed as hooks; must implement on_pipeline_event
+)
+```
+
+### `CompressionHooks` — additional extension seam
+
+`CompressionHooks` sits alongside the canonical lifecycle as a complementary seam. It provides `pre_compress`, `post_compress`, and `compute_biases` callbacks for finer-grained control over the compression step itself:
+
+```python
+from headroom.hooks import CompressionHooks, CompressContext, CompressEvent
+
+class MyHooks(CompressionHooks):
+    def pre_compress(self, messages, ctx: CompressContext):
+        # Inspect or rewrite messages before compression
+        return messages
+
+    def post_compress(self, event: CompressEvent):
+        # Record metrics after compression
+        print(f"Saved {event.tokens_saved} tokens via {event.transforms_applied}")
+
+    def compute_biases(self, messages, ctx: CompressContext):
+        # Return per-message compression bias hints
+        return None
+
+result = compress(messages, model="gpt-4o", hooks=MyHooks())
+```
+
+## Proxy Architecture
+
+The proxy is a **FastAPI + Uvicorn** server that acts as a drop-in OpenAI/Anthropic-compatible endpoint. Upstream requests are forwarded via an **httpx** async client.
+
+```text
+Client request
+  ──► FastAPI route handler (headroom/proxy/server.py)
+  ──► PipelineExtensionManager.emit(INPUT_RECEIVED)
+  ──► CacheAligner.apply()
+  ──► ContentRouter.apply()  →  SmartCrusher / CodeCompressor / Kompress
+  ──► CCR: cache originals, inject headroom_retrieve tool
+  ──► PipelineExtensionManager.emit(PRE_SEND)
+  ──► httpx upstream client → LLM provider
+  ──► CCRResponseHandler intercepts streaming / non-streaming response
+  ──► PipelineExtensionManager.emit(RESPONSE_RECEIVED)
+  ──► Response forwarded to client
+```
+
+**Proxy extensions** remain the server/app integration seam for ASGI middleware, custom routes, and startup policy — separate from the canonical pipeline lifecycle extensions above:
+
+```python
+from headroom.middleware import CompressionMiddleware
+
+# ASGI middleware (FastAPI, Starlette, any ASGI app)
+app.add_middleware(CompressionMiddleware)
+```
+
+## What Headroom Does Not Touch
+
+- **User messages** — never compressed by default (`compress_user_messages=False`)
+- **System prompt content** — preserved exactly; CacheAligner only emits warnings
+- **Code** — passes through unchanged unless `CodeCompressor` is explicitly enabled (`pip install "headroom-ai[code]"`)
+- **Short content** — tool outputs under `min_tokens_to_compress` (default: 250 tokens) pass through unchanged
+- **Model responses** — returned to your client exactly as received from the provider
+- **Excluded tools** — `Read`, `Glob`, `Grep`, `Write`, and `Edit` tool outputs are excluded from compression by default (they contain exact file content needed for edit workflows)

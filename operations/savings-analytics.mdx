@@ -1,0 +1,236 @@
+---
+title: "Track Token Savings with Headroom Analytics"
+sidebarTitle: "Savings Analytics"
+description: "Use headroom savings, perf, dashboard, doctor, and output-savings to measure token and dollar savings across sessions, models, and clients."
+---
+
+Headroom provides several complementary tools for measuring compression savings — from a quick session glance to detailed per-model cost breakdowns and a live browser dashboard. This page covers all of them and explains how they relate to each other.
+
+## `headroom savings` — Durable Ledger
+
+`headroom savings` reads an append-only event ledger (`~/.headroom/savings_events.jsonl`) and shows cumulative token and dollar savings that **survive proxy and agent restarts**. Both the MCP tool path and the proxy write to the same ledger, so savings are aggregated accurately across all clients.
+
+```bash
+headroom savings            # Human-readable summary
+headroom savings --json     # Machine-readable JSON report
+headroom savings --days 30  # Restrict lookback/retention window
+headroom savings --reset    # Delete the ledger and start fresh
+```
+
+### Example output
+
+```text
+Today       ███████████░░░░░  67.9%  saved 19,000 / 28,000 tokens  $0.0850
+Last 7 days ███████████░░░░░  67.1%  saved 47,000 / 70,000 tokens  $0.2250
+All time    ██████████░░░░░░  65.0%  saved 78,000 / 120,000 tokens  $0.2680
+
+Cost avoided per model:
+  claude-opus-4-8          $0.1750
+  gpt-5.5                  $0.0350
+  unknown                  $0.0330
+  claude-haiku-4-5         $0.0250
+
+Savings by client:
+  claude-code              4 calls · 60,000 tokens saved
+  codex                    2 calls · 18,000 tokens saved
+```
+
+### How the ledger works
+
+Every compression appends a single line to the file-locked, append-only ledger. `headroom savings` aggregates it on read. This design is:
+
+- **Durable** — totals survive proxy and agent restarts
+- **Accurate under concurrency** — the MCP server and proxy are separate processes; append-only locking prevents lost-update races
+- **Self-pruning** — events older than the retention window (365 days by default) are dropped on read
+
+### Cost basis
+
+Cost avoided is the dollar value of the saved **input** tokens. Headroom prices proxy traffic using [LiteLLM](https://github.com/BerriAI/litellm) list pricing when the upstream model is known. MCP-tool compressions record `model="unknown"` and fall back to a blended per-token rate rather than reporting `$0`.
+
+### Ledger environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `HEADROOM_SAVINGS_EVENTS_PATH` | Override the ledger location (default `~/.headroom/savings_events.jsonl`) |
+| `HEADROOM_MCP_CLIENT` | Override the client label recorded by the MCP tool path |
+| `HEADROOM_MCP_MODEL` | Model hint for MCP-tool compressions, so they price against a known model |
+
+## `headroom perf` — Performance Report
+
+`headroom perf` reads the proxy log (`~/.headroom/logs/proxy.log`) and produces a detailed performance report covering token savings, cache hit rates, transform breakdowns, and actionable recommendations.
+
+```bash
+headroom perf                        # Analyze last 7 days (default)
+headroom perf --hours 24             # Analyze last 24 hours
+headroom perf --raw                  # Show raw parsed PERF records
+headroom perf --format json          # Aggregated report as JSON
+headroom perf --format csv --hours 24 > last-24h.csv
+headroom perf --format json --raw    # Raw records as a JSON array
+```
+
+The report includes:
+
+- **Token savings and compression effectiveness** — before/after counts per model
+- **Cache hit rates and prefix stability** — how well CacheAligner is working
+- **Transform and routing breakdown** — which compressors fired and how often
+- **TOIN learning status** — how many patterns have been learned from traffic
+- **Actionable recommendations** — specific configuration suggestions
+
+<Note>
+`headroom perf` requires the proxy to have run at least one request. Start the proxy first with `headroom proxy` or `headroom wrap`, then make some requests, then run `headroom perf`.
+</Note>
+
+## `headroom dashboard` — Live Browser Dashboard
+
+`headroom dashboard` opens the live savings dashboard in your browser. The dashboard shows real-time compression metrics, the **Proxy $ Saved** tile, and (when `HEADROOM_OUTPUT_HOLDOUT` is set) an **Output Tokens Saved** card with a measured or estimated confidence band.
+
+```bash
+headroom dashboard              # Open in browser (proxy must be running)
+headroom dashboard --no-open    # Print the URL instead
+headroom dashboard --port 8080  # Use a non-default proxy port
+```
+
+The dashboard is served directly by the proxy at `http://127.0.0.1:8787/dashboard`. It requires a running proxy — start one with `headroom proxy` or `headroom wrap <tool>`.
+
+<Warning>
+The **Proxy $ Saved** tile uses LiteLLM pricing and requires Python 3.10–3.13. On Python 3.14+, LiteLLM cannot be installed and the dollar figure stays `$0.00`. Token savings still track correctly on all Python versions. See [Troubleshooting](/operations/troubleshooting) for the fix.
+</Warning>
+
+## `headroom doctor` — Health Check
+
+`headroom doctor` diagnoses whether the local Headroom setup is working correctly — proxy liveness, client routing, version drift, savings flow, and budget configuration. Run it whenever savings look unexpectedly low or after changing your setup.
+
+```bash
+headroom doctor              # Full health check (default port 8787)
+headroom doctor --port 8080  # Check a non-default port
+headroom doctor --json       # Emit JSON for scripting/CI
+```
+
+### Checks performed
+
+| Check | What it verifies |
+|-------|-----------------|
+| `proxy` | Proxy process is up and answering `/livez` |
+| `version` | Running proxy version matches installed package |
+| `claude` | Claude Code `~/.claude/settings.json` routes via proxy |
+| `codex` | Codex `~/.codex/config.toml` has Headroom provider block |
+| `shell env` | `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` set in current shell |
+| `savings` | Tokens are actually being saved (lifetime totals + last activity) |
+| `budget` | Spend budget is configured (warns if unlimited) |
+| `deployments` | Persistent deployment health URLs respond correctly |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All checks passed |
+| `1` | Warnings only — working, but not optimally wired |
+| `2` | At least one failure (proxy down, deployment unhealthy) |
+
+### Example output
+
+```text
+Headroom Doctor v0.21.4 · port 8787
+
+check              status    summary
+─────────────────────────────────────────────────────────
+proxy              ✓ pass    running at http://127.0.0.1:8787 (up 14m, v0.21.4)
+version            ✓ pass    proxy matches installed v0.21.4
+claude             ✓ pass    routed via ~/.claude/settings.json
+codex              ✓ pass    routed (~/.codex/config.toml)
+shell env          ⚠ warn    ANTHROPIC_BASE_URL unset — this shell bypasses the proxy
+savings            ✓ pass    1,234,567 tokens / $4.23 saved lifetime — last request 2m ago
+budget             ⚠ warn    no budget configured — spend is unlimited
+
+shell env: export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+budget: set one: headroom proxy --budget 10 (env: HEADROOM_BUDGET)
+
+0 failure(s), 2 warning(s)
+```
+
+## `headroom output-savings` — Output Token Estimate
+
+Output savings are counterfactual — Headroom never sees what the model *would* have written without verbosity steering — so they are reported as an honest **estimate with a 95% confidence range**:
+
+```bash
+headroom output-savings
+# Reduction: 31.7%  (95% CI 27.7% … 35.7%)   [estimated]
+```
+
+Enable output shaping first with `HEADROOM_OUTPUT_SHAPER=1` (off by default):
+
+```bash
+export HEADROOM_OUTPUT_SHAPER=1
+headroom proxy --port 8787
+```
+
+### Measured vs. estimated savings
+
+For a *measured* number instead of an estimate, leave a fraction of conversations unshaped as a control group:
+
+```bash
+export HEADROOM_OUTPUT_HOLDOUT=0.1   # 10% control group
+headroom proxy --port 8787
+```
+
+The dashboard shows an **Output Tokens Saved** card labelled `measured` or `estimated`, with the confidence band. A 10% holdout is a reasonable trade-off between measurement accuracy and overall savings.
+
+## Proxy `/stats` Endpoint
+
+The proxy exposes a live JSON stats object at `GET http://127.0.0.1:8787/stats`. This is an **in-memory snapshot** for the current proxy session — it resets on proxy restart, unlike the durable savings ledger.
+
+```bash
+curl http://127.0.0.1:8787/stats | jq
+```
+
+Key fields in the stats object:
+
+| Field | Description |
+|-------|-------------|
+| `session.tokens_before` | Total input tokens seen this session |
+| `session.tokens_after` | Total tokens after compression |
+| `session.tokens_saved_total` | Tokens saved this session |
+| `session.compression_pct` | Session-level compression percentage |
+| `session.last_activity_at` | ISO timestamp of most recent request |
+| `persistent_savings.lifetime` | Cross-session lifetime totals (tokens, USD) |
+| `persistent_savings.display_session` | Current display session data |
+| `cost.budget_limit_usd` | Configured budget limit (null = unlimited) |
+| `cost.budget_period` | Budget period: `hourly`, `daily`, or `monthly` |
+| `cost.spend_usd` | USD spent this period |
+
+Additional endpoints:
+
+```bash
+GET /stats-history    # Durable compression history + display session
+GET /livez            # Process liveness (lightweight)
+GET /readyz           # Traffic readiness
+GET /health           # Aggregate health check
+GET /metrics          # Prometheus metrics
+```
+
+## Dollar Savings: LiteLLM Pricing Integration
+
+Headroom prices saved tokens using [LiteLLM](https://github.com/BerriAI/litellm) list pricing. When the model is known (proxy traffic), cost avoided is calculated precisely. When the model is unknown (MCP tool path), a blended fallback rate is used.
+
+<Note>
+LiteLLM requires Python 3.10–3.13. On Python 3.14+, dollar figures in the dashboard and `headroom savings` stay `$0.00`. Token counts are always accurate. Switch to Python 3.13 with `pipx reinstall headroom-ai --python python3.13` to restore dollar tracking.
+</Note>
+
+## How the Analytics Tools Relate
+
+```
+headroom savings        → durable ledger (~/.headroom/savings_events.jsonl)
+                          survives restarts · aggregated on read · both MCP + proxy
+
+headroom perf           → proxy log (~/.headroom/logs/proxy.log)
+                          session-level detail · cache hit rates · TOIN status
+
+headroom dashboard      → proxy /stats endpoint (in-memory)
+                          live view · resets on proxy restart
+
+headroom doctor         → proxy /livez + /stats + local config files
+                          health check · routing diagnosis · not a savings report
+
+headroom output-savings → proxy output-shaper log
+                          counterfactual estimate or measured (with holdout)
+```

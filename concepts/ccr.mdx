@@ -1,0 +1,190 @@
+---
+title: "Lossless Reversible Compression with CCR Architecture"
+sidebarTitle: "CCR"
+description: "How Headroom's Compress-Cache-Retrieve system stores originals locally so the LLM can retrieve any compressed content on demand — zero data loss."
+---
+
+Headroom's **CCR (Compress-Cache-Retrieve)** architecture makes every compression operation fully reversible — a core design principle that separates Headroom from every other context compression tool. When content is compressed, the original is stored in a local cache keyed by a short hash. If the LLM determines the compressed view is insufficient, it calls the injected `headroom_retrieve` tool and gets the full original back — transparently, in the same request, without any code changes on your side.
+
+<Note>
+  Nothing is ever permanently lost. CCR guarantees that every piece of original data remains accessible within the configured TTL. You get 70–90% token savings with zero risk of permanent data loss.
+</Note>
+
+## The Problem CCR Solves
+
+Traditional lossy compression forces an uncomfortable tradeoff: compress aggressively and risk losing data the LLM needs, or compress conservatively and leave most of the savings on the table. CCR eliminates that tradeoff entirely — compress aggressively, retrieve on demand.
+
+## The Four-Phase Architecture
+
+```text
+TOOL OUTPUT (1000 items)
+  ──► SmartCrusher compresses to 20 items
+  ──► Original 1000 items cached: hash=abc123
+  ──► Retrieval marker added to compressed output:
+      [1000 items compressed to 20. Retrieve more: hash=abc123. Expires in 30m.]
+  ──► headroom_retrieve tool injected into request tools
+
+LLM PROCESSING
+  Option A: LLM solves task with 20 items ──► Done (95% savings)
+  Option B: LLM calls headroom_retrieve(hash="abc123")
+            ──► Response Handler intercepts the tool call
+            ──► Returns original 1000 items (~1ms, local cache)
+            ──► Conversation continues automatically
+```
+
+### Phase 1: Compression Store
+
+When SmartCrusher or ContentRouter compresses a tool output, two things happen simultaneously:
+
+1. The **original content** is stored in an LRU cache (`CompressionStore`) keyed by a deterministic hash.
+2. A **retrieval marker** is appended to the compressed output so the LLM knows a fuller version exists.
+
+The marker format (from `CCRConfig.marker_template`):
+
+```
+[{original_count} items compressed to {compressed_count}.{summary} Retrieve more: hash={hash}. Expires in {ttl_minutes}m.]
+```
+
+Default TTL is **1800 seconds (30 minutes)** — long enough for most agentic sessions. For longer autonomous runs, override it before starting the proxy:
+
+```bash
+HEADROOM_CCR_TTL_SECONDS=7200 headroom proxy --port 8787
+```
+
+### Phase 2: Tool Injection
+
+Headroom injects the `headroom_retrieve` tool into every request where compression occurred. The tool appears alongside your application's existing tools, so the LLM can call it naturally:
+
+```json
+{
+  "name": "headroom_retrieve",
+  "description": "Retrieve original uncompressed data from Headroom cache",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hash": {
+        "type": "string",
+        "description": "The hash key from the compression marker"
+      }
+    },
+    "required": ["hash"]
+  }
+}
+```
+
+When MCP is configured (`headroom mcp install`), tool injection is automatically skipped to avoid duplicating the tool definition — the MCP server exposes `headroom_retrieve` directly instead.
+
+### Phase 3: Response Handler
+
+When the LLM decides to call `headroom_retrieve`, the proxy's **CCRResponseHandler** intercepts the tool call before it ever reaches your application code:
+
+1. The tool call is detected in the streaming or non-streaming response.
+2. The `CompressionStore` is queried by hash (local lookup, ~1ms).
+3. The full original content is returned as the tool result.
+4. The API call continues automatically — the LLM processes the full data and produces a final response.
+
+Your application only ever sees the final answer. CCR tool calls are invisible.
+
+### Phase 4: Context Tracker
+
+Across multi-turn conversations, the **ContextTracker** maintains awareness of all compressed content in the session. It tracks:
+
+- What was compressed in earlier turns (hash → content mapping)
+- Which content types and queries are active in the current turn
+- `ExpansionRecommendation` signals for proactively expanding relevant compressed data before the LLM has to ask
+
+```
+Turn 1: User searches for files
+        ──► 500 files compressed to 15 items, cached (hash=abc123)
+        ──► LLM answers with the top 15 files
+
+Turn 5: User asks "What about the auth middleware?"
+        ──► ContextTracker detects "auth" may match cached content
+        ──► Proactively expands hash=abc123 before sending the request
+        ──► LLM finds auth_middleware.py in the full list
+```
+
+## CCR with MCP vs. Proxy Injection
+
+<Tabs>
+  <Tab title="Proxy mode (default)">
+    The proxy automatically injects `headroom_retrieve` and intercepts tool calls. No setup required — just run `headroom proxy` and point your client at it.
+
+    ```bash
+    headroom proxy --port 8787
+    # HEADROOM_CCR_TTL_SECONDS=7200 headroom proxy --port 8787  # longer TTL
+    ```
+
+    Check the live TTL and cache stats:
+
+    ```bash
+    curl http://localhost:8787/v1/retrieve/stats
+    # {"store": {"default_ttl_seconds": 1800, "entries": 42, ...}}
+    ```
+  </Tab>
+  <Tab title="MCP mode">
+    Install the MCP server to expose CCR tools directly to MCP-native clients (Claude Desktop, OpenHands, etc.):
+
+    ```bash
+    headroom mcp install
+    ```
+
+    The MCP server exposes three tools: `headroom_compress`, `headroom_retrieve`, and `headroom_stats`. When MCP is active, proxy-level tool injection is disabled automatically.
+  </Tab>
+  <Tab title="Library mode">
+    When using the `compress()` function directly, CCR markers are embedded in the compressed messages. You're responsible for intercepting `headroom_retrieve` tool calls and responding with the cached content:
+
+    ```python
+    from headroom import compress
+    from headroom.config import CCRConfig, CompressConfig
+
+    result = compress(
+        messages,
+        model="claude-sonnet-4-5-20250929",
+        config=CompressConfig(),  # CCR is on by default
+    )
+
+    # CCR markers appear in the compressed messages as text:
+    # "[1000 items compressed to 20. Retrieve more: hash=abc123. Expires in 30m.]"
+    print(result.messages)
+    print(result.transforms_applied)
+    ```
+  </Tab>
+</Tabs>
+
+## CCR Configuration
+
+CCR is enabled by default. Fine-grained control is available via `CCRConfig` in `HeadroomConfig`:
+
+```python
+from headroom.config import CCRConfig, HeadroomConfig
+
+config = HeadroomConfig(
+    ccr=CCRConfig(
+        enabled=True,
+        store_max_entries=1000,      # LRU eviction after this many entries
+        store_ttl_seconds=1800,      # 30 minutes (default)
+        inject_retrieval_marker=True, # Append "[N items compressed…]" to output
+        inject_tool=True,             # Inject headroom_retrieve into tools array
+        feedback_enabled=True,        # Track retrievals to improve compression
+        min_items_to_cache=20,        # Only cache arrays with ≥ 20 original items
+    )
+)
+```
+
+## CCR-Enabled Components
+
+| Component | What it caches | Marker format |
+|---|---|---|
+| **SmartCrusher** | JSON arrays (tool outputs) | `[N items compressed to K. Retrieve more: hash=…]` |
+| **ContentRouter** | Code, logs, search results, text | Per-strategy hash marker |
+
+## Why Reversibility Matters
+
+| Approach | Data loss risk | Token savings |
+|---|---|---|
+| No compression | None | 0% |
+| Traditional lossy compression | Permanent | 70–90% |
+| **CCR compression** | **None (reversible)** | **70–90%** |
+
+CCR gives you the savings of aggressive compression with the safety of no compression. The worst case is one extra tool call — the LLM retrieves what it needs and continues.

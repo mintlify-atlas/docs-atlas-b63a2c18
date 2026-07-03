@@ -1,0 +1,161 @@
+---
+title: "Compress Context in Vercel AI SDK Applications"
+sidebarTitle: "Vercel AI SDK"
+description: "Add Headroom to Vercel AI SDK apps using headroomMiddleware() or the withHeadroom() one-liner to compress messages before every LLM call."
+---
+
+Headroom integrates with the [Vercel AI SDK](https://sdk.vercel.ai) through three patterns: a one-liner wrapper, composable middleware, and standalone message compression. All three compress messages before they reach the underlying language model, with no changes to streaming, tool calling, or structured output behavior.
+
+## Installation
+
+```bash
+npm install headroom-ai ai @ai-sdk/openai
+```
+
+<Note>
+  The TypeScript SDK sends messages to a local Headroom proxy for compression. Start the proxy before using the SDK:
+
+  ```bash
+  pip install "headroom-ai[proxy]"
+  headroom proxy
+  ```
+</Note>
+
+## withHeadroom() one-liner
+
+The simplest integration. Wraps any Vercel AI SDK language model with automatic compression and works with any provider (`@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, etc.):
+
+```typescript
+import { withHeadroom } from 'headroom-ai/vercel-ai';
+import { openai } from '@ai-sdk/openai';
+import { generateText } from 'ai';
+
+const model = withHeadroom(openai('gpt-4o'));
+
+const { text } = await generateText({
+  model,
+  messages: [
+    { role: 'user', content: 'Summarize these results...' },
+  ],
+});
+```
+
+`withHeadroom()` calls `wrapLanguageModel` + `headroomMiddleware()` under the hood.
+
+## headroomMiddleware() for composition
+
+Use the middleware directly when you need to compose it with other middleware or when you want explicit control over the wrapping:
+
+```typescript
+import { headroomMiddleware } from 'headroom-ai/vercel-ai';
+import { wrapLanguageModel } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const model = wrapLanguageModel({
+  model: openai('gpt-4o'),
+  middleware: headroomMiddleware(),
+});
+```
+
+Pass options to control compression behavior:
+
+```typescript
+import { headroomMiddleware } from 'headroom-ai/vercel-ai';
+
+const middleware = headroomMiddleware({
+  model: 'gpt-4o',
+  baseUrl: 'http://localhost:8787',
+});
+```
+
+## Middleware configuration options
+
+<CardGroup cols={2}>
+  <Card title="model" icon="microchip">
+    Target model ID for token counting and context-limit enforcement. Defaults to the model's own `modelId`.
+  </Card>
+  <Card title="baseUrl" icon="server">
+    Headroom proxy URL. Defaults to `http://localhost:8787`.
+  </Card>
+</CardGroup>
+
+## compressVercelMessages() standalone
+
+Compress Vercel-format messages directly without wrapping a model. Useful for custom pipelines where you want to compress before passing to any downstream consumer:
+
+```typescript
+import { compressVercelMessages } from 'headroom-ai/vercel-ai';
+
+const result = await compressVercelMessages(messages, {
+  model: 'gpt-4o',
+});
+
+console.log(`Saved ${result.tokensSaved} tokens`);
+// result.messages is in Vercel format, ready for the AI SDK
+```
+
+## Streaming with streamText
+
+Compression happens before the request is sent. Streaming responses are completely unaffected:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/vercel-ai';
+import { openai } from '@ai-sdk/openai';
+import { streamText } from 'ai';
+
+const model = withHeadroom(openai('gpt-4o'));
+
+const result = streamText({
+  model,
+  messages: longConversation,
+});
+
+for await (const chunk of result.textStream) {
+  process.stdout.write(chunk);
+}
+```
+
+## generateObject with compressed context
+
+Works with structured output — the schema and output format are not affected by compression:
+
+```typescript
+import { withHeadroom } from 'headroom-ai/vercel-ai';
+import { openai } from '@ai-sdk/openai';
+import { generateText, Output } from 'ai';
+import { z } from 'zod';
+
+const model = withHeadroom(openai('gpt-4o'));
+
+const { output } = await generateText({
+  model,
+  output: Output.object({
+    schema: z.object({
+      summary: z.string(),
+      severity: z.enum(['low', 'medium', 'high']),
+    }),
+  }),
+  messages: largeConversationHistory,
+});
+```
+
+## How it works
+
+<Steps>
+  <Step title="Convert to OpenAI format">
+    Messages are converted from Vercel's `ModelMessage[]` format to OpenAI format.
+  </Step>
+  <Step title="Compress via proxy">
+    Headroom compresses the messages via the proxy's `/v1/compress` endpoint.
+  </Step>
+  <Step title="Convert back to Vercel format">
+    Compressed messages are converted back to Vercel's message format.
+  </Step>
+  <Step title="Pass to model">
+    The original model receives the smaller prompt. All other model behavior — tool calling, structured output, streaming — is unchanged.
+  </Step>
+</Steps>
+
+<Tip>
+  The middleware integrates at the `transformParams` level, which means it runs before every `doGenerate` and `doStream` call. This covers `generateText`, `streamText`, `generateObject`, `streamObject`, and any other Vercel AI SDK function.
+</Tip>

@@ -1,0 +1,186 @@
+---
+title: "Headroom Compression Benchmarks and Accuracy Data"
+sidebarTitle: "Benchmarks"
+description: "Compression ratios, accuracy preservation on GSM8K/SQuAD/BFCL, latency overhead, and production telemetry from 250+ Headroom proxy instances."
+---
+
+Headroom's core promise is to compress LLM context without losing accuracy. This page covers compression benchmarks, accuracy evaluations, latency overhead, and production telemetry from real deployments. All results are reproducible from the open-source repository.
+
+## Compression Performance
+
+Tested on Apple M-series (CPU), Headroom v0.5.18. Each test runs `compress()` on realistic tool outputs representative of real agent workloads.
+
+| Content type | Original tokens | Compressed | Saved | Ratio | Latency |
+|---|---:|---:|---:|---:|---:|
+| JSON array (100 items) | 3,163 | 297 | 2,866 | **90.6%** | 1 ms |
+| JSON array (500 items) | 9,526 | 1,614 | 7,912 | **83.1%** | 2 ms |
+| Shell output (200 lines) | 3,238 | 469 | 2,769 | **85.5%** | 1 ms |
+| Build log (200 lines) | 2,412 | 148 | 2,264 | **93.9%** | 1 ms |
+| grep results (150 hits) | 2,624 | 2,624 | 0 | 0.0% | &lt;1 ms |
+| Python source (~480 lines) | 2,958 | 2,958 | 0 | 0.0% | &lt;1 ms |
+| **Total** | **23,921** | **8,110** | **15,811** | **66.1%** | **5 ms** |
+
+<Note>
+**Zero compression is intentional.** grep results and Python source show 0% compression. grep results are already a compact structured format. Source code passes through unchanged to preserve correctness — the CodeCompressor is gated by safety protections (recent-code protection, analysis-intent detection) that prevent it from firing in the scenarios where it would matter most. See [Limitations](/operations/troubleshooting) for details.
+</Note>
+
+## Real Workload Savings
+
+Savings measured on complete agent sessions — not synthetic benchmarks:
+
+| Workload | Before | After | Savings |
+|----------|-------:|------:|--------:|
+| Code search (100 results) | 17,765 | 1,408 | **92%** |
+| SRE incident debugging | 65,694 | 5,118 | **92%** |
+| GitHub issue triage | 54,174 | 14,761 | **73%** |
+| Codebase exploration | 78,502 | 41,254 | **47%** |
+
+The range reflects content mix: JSON-heavy workloads (search results, API responses, build logs) compress most aggressively. Sessions dominated by file reads and code changes compress less because code passes through.
+
+## Accuracy Benchmarks
+
+### Standard NLP and Reasoning Benchmarks
+
+Accuracy is measured with and without Headroom compression applied. A delta of `±0.000` means no measurable accuracy loss at the compression ratios tested.
+
+| Benchmark | Category | N | Baseline | Headroom | Delta |
+|-----------|----------|--:|--------:|---------:|-------|
+| GSM8K | Math | 100 | 0.870 | 0.870 | **±0.000** |
+| TruthfulQA | Factual | 100 | 0.530 | 0.560 | **+0.030** |
+| SQuAD v2 | QA | 100 | — | **97%** | at 19% compression |
+| BFCL | Tools | 100 | — | **97%** | at 32% compression |
+
+<Tip>
+TruthfulQA scores slightly *higher* with Headroom (+0.030). Removing HTML noise and verbose wrapper text helps LLMs focus on relevant content rather than boilerplate, reducing hallucination triggers.
+</Tip>
+
+### HTML Extraction Accuracy
+
+**Dataset**: Scrapinghub Article Extraction Benchmark (181 HTML pages with ground-truth article text).
+
+| Metric | Value |
+|--------|-------|
+| F1 Score | **0.919** |
+| Precision | 0.879 |
+| Recall | **0.982** |
+| Compression ratio | 94.9% |
+
+For LLM applications, recall is the critical metric — 98.2% means nearly all article content is preserved. The small precision drop (some extra content included) does not hurt LLM answer quality.
+
+### JSON Compression (SmartCrusher)
+
+**Test**: 100 production log entries with a critical error buried at position 67. Task: find the error, error code, resolution, and affected count.
+
+| Metric | Baseline | Headroom |
+|--------|----------|---------|
+| Input tokens | 10,144 | 1,260 |
+| Correct answers | 4/4 | **4/4** |
+| Compression | — | **87.6%** |
+
+SmartCrusher preserves first N items (schema discovery), last N items (recency), all anomalies (errors, warnings), and items relevant to the query context — so the critical error at position 67 is never dropped.
+
+### QA Accuracy on Extracted Content
+
+| Metric | Original HTML | Headroom extracted | Delta |
+|--------|:---:|:---:|:---:|
+| F1 Score | 0.85 | 0.87 | +0.02 |
+| Exact Match | 60% | 62% | +2% |
+
+## Latency Overhead
+
+### Total Pipeline Latency
+
+The compression pipeline adds **sub-5ms total** on realistic tool outputs (see the compression-performance table above). The pipeline step breakdown on production traffic:
+
+| Step | Median | P90 | Description |
+|------|-------:|----:|-------------|
+| `pipeline_total` | 16.9 ms | 289 ms | Full compression pipeline |
+| `content_router` | 11.7 ms | 259 ms | Content detection + routing |
+| `smart_crusher` | 50.1 ms | 50 ms | JSON array compression |
+| `text_compressor` | 32.0 ms | 576 ms | Text compression (Kompress ONNX) |
+| `initial_token_count` | 2.9 ms | 16 ms | Token counting (tiktoken) |
+
+ContentRouter accounts for 91–98% of pipeline cost on average. CacheAligner is sub-millisecond.
+
+### SDK Compression Latency by Input Size
+
+Measured per-scenario on Apple M-series (CPU):
+
+| Scenario | Tokens in | Tokens out | Saved | p50 (ms) | p95 (ms) |
+|----------|----------:|-----------:|------:|---------:|---------:|
+| JSON: Search results (100 items) | 10.2K | 1.5K | 8.7K | 189 | 231 |
+| JSON: Search results (500 items) | 50.2K | 1.5K | 48.7K | 943 | 955 |
+| JSON: Search results (1K items) | 100.5K | 1.5K | 99.0K | 2,012 | 2,198 |
+| JSON: API responses (500 items) | 38.9K | 1.1K | 37.8K | 743 | 776 |
+| JSON: Database rows (1K rows) | 43.7K | 605 | 43.1K | 961 | 1,104 |
+| JSON: String array (100 strings) | 1.1K | 231 | 820 | 15 | 15 |
+| JSON: String array (500 strings) | 4.9K | 233 | 4.6K | 72 | 80 |
+| JSON: Number array (200 numbers) | 1.2K | 192 | 1.1K | 31 | 62 |
+| JSON: Mixed array (250 items) | 2.3K | 368 | 1.9K | 38 | 40 |
+
+### Cost-Benefit Analysis
+
+Compression overhead is always smaller than the LLM time saved from sending fewer tokens. At Claude Sonnet pricing ($3.0/MTok input):
+
+| Scenario | Compress (ms) | LLM saved (ms) | Net benefit | Savings per 1K requests |
+|----------|-------------:|--------------:|------------:|------------------------:|
+| JSON: Search results (100 items) | 189 | 261 | **+72ms** | $26 |
+| JSON: Search results (500 items) | 943 | 1,461 | **+518ms** | $146 |
+| JSON: Search results (1K items) | 2,012 | 2,969 | **+957ms** | $297 |
+| JSON: API responses (500 items) | 743 | 1,134 | **+391ms** | $113 |
+| JSON: Database rows (1K rows) | 961 | 1,292 | **+331ms** | $129 |
+
+Compression pays for itself in latency for 11 of 12 tested scenarios against Claude Sonnet. Slower, more expensive models (Opus) benefit even more — output costs 5× input on Opus-class models.
+
+## Production Telemetry
+
+Real-world data from **50,000+ proxy sessions** across 250+ unique instances (March–April 2026). Collected via anonymous opt-in telemetry (`HEADROOM_TELEMETRY=on`; telemetry is off by default).
+
+### Proxy Overhead Distribution
+
+| Percentile | Latency |
+|------------|--------:|
+| **Median (P50)** | **52 ms** |
+| P90 | 309 ms |
+| P99 | 4,172 ms |
+| Mean | 161 ms |
+
+The median 52 ms overhead is negligible compared to LLM inference time (typically 2–10 seconds for streaming and 5–30 seconds for long context).
+
+### Compression Rate Distribution
+
+| Percentile | Compression |
+|------------|------------:|
+| P25 | 4.8% |
+| **Median** | **4.8%** |
+| P75 | 6.9% |
+| Mean | 11.3% |
+
+Median compression is modest because many requests are short conversational turns. Heavy tool-use sessions (file reads, shell output, API responses) see 40–80% compression.
+
+### Fleet Summary
+
+| Metric | Value |
+|--------|-------|
+| Healthy instances | 249 |
+| Total tokens saved | 1.4 billion |
+| Total cost avoided | ~$4,000 |
+| OS distribution | Linux 57%, macOS 38%, Windows 5% |
+
+## Running the Evaluations
+
+Reproduce all accuracy benchmarks with:
+
+```bash
+# Tier 1: fast benchmarks (GSM8K, TruthfulQA, SQuAD v2, BFCL)
+python -m headroom.evals suite --tier 1
+
+# Full suite including HTML extraction
+git clone https://github.com/chopratejas/headroom.git && cd headroom
+pip install -e ".[evals,html]"
+pytest tests/test_evals/ -v -s
+```
+
+<Note>
+The `[evals]` extra is required for the eval harness. HTML benchmarks additionally need the `[html]` extra. Both are excluded from `[all]` to keep the default install lightweight.
+</Note>

@@ -1,0 +1,160 @@
+---
+title: "headroom learn — Offline Failure Analysis CLI"
+sidebarTitle: "learn"
+description: "Reference for headroom learn: analyze past agent failures, write prevention recommendations to CLAUDE.md/AGENTS.md, and learn preferred output verbosity from session transcripts."
+---
+
+`headroom learn` analyzes your agent's conversation history offline — scanning past sessions for recurring failure patterns (wrong file paths, missing modules, stubborn retry loops) and generating context that prevents them from happening again. It writes recommendations to the agent's native memory files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) so the next session starts knowing what went wrong before.
+
+```bash
+headroom learn                     # Dry-run: preview recommendations
+headroom learn --apply             # Write recommendations to memory files
+headroom learn --all               # Analyze all discovered projects
+headroom learn --verbosity         # Preview preferred output verbosity
+headroom learn --verbosity --apply # Persist verbosity level and baseline
+```
+
+The command supports multiple agents via a plugin architecture. Built-in support covers Claude Code, Codex, and Gemini CLI. External plugins can be registered via the `headroom.learn_plugin` entry point.
+
+---
+
+## Flags
+
+<ParamField query="--apply" type="flag">
+  Write recommendations to context/memory files. Without this flag, `learn` runs as a dry run — it prints what it would write but makes no changes to disk.
+</ParamField>
+
+<ParamField query="--target" type="string">
+  Override the output file for recommendations (Claude Code only). Path is relative to the project root or absolute. Defaults to `CLAUDE.local.md` (personal, gitignored). Pass `CLAUDE.md` to write to the team-shared file, or `AGENTS.md` / `GEMINI.md` for other agents.
+
+  ```bash
+  headroom learn --apply --target CLAUDE.md
+  headroom learn --apply --target AGENTS.md
+  headroom learn --apply --target GEMINI.md
+  ```
+</ParamField>
+
+<ParamField query="--project" type="path">
+  Project directory to analyze. Defaults to the current working directory. Cannot be combined with `--all`.
+
+  ```bash
+  headroom learn --project ~/code/my-app --apply
+  ```
+</ParamField>
+
+<ParamField query="--all" type="flag">
+  Analyze all projects discovered in the agent's history, not just the current directory. Cannot be combined with `--project`.
+
+  ```bash
+  headroom learn --all --apply
+  ```
+</ParamField>
+
+<ParamField query="--agent" type="auto | claude | codex | gemini">
+  Which coding agent's history to scan. Defaults to `auto`, which detects all agents with data on this machine and scans all of them.
+
+  ```bash
+  headroom learn --agent codex --all
+  headroom learn --agent claude
+  ```
+
+  External plugins installed via `headroom.learn_plugin` entry point appear here automatically.
+</ParamField>
+
+<ParamField query="--model" type="string">
+  LLM model used for failure analysis (e.g. `claude-sonnet-4-6`, `gpt-4o`, `gemini/gemini-flash-latest`). Auto-detected from available API keys when not specified.
+</ParamField>
+
+<ParamField query="--workers / -j" type="integer">
+  Parallel workers for session scanning. Defaults to `min(cpu_count, 8)`. Use `--workers 1` for serial processing.
+</ParamField>
+
+<ParamField query="--main-only" type="flag">
+  Only scan top-level main sessions, skipping nested subagent and workflow transcripts (Claude Code). By default all session types are scanned.
+</ParamField>
+
+---
+
+## Verbosity learning
+
+Pass `--verbosity` to switch from failure analysis to output-verbosity learning. This mode mines behavioral signals — interrupts, fast-skips, echo ratios — from past sessions to determine how concise the agent's responses should be.
+
+<ParamField query="--verbosity" type="flag">
+  Learn the user's preferred output verbosity from behavioral signals instead of analyzing failures. Prints the recommended verbosity level (1–4) and confidence.
+
+  Verbosity levels:
+  - **1** — Skip ceremony (greetings, summaries)
+  - **2** — No ceremony and no echo (don't restate what you were asked)
+  - **3** — Conclusions only
+  - **4** — Caveman/fragments — extreme brevity
+</ParamField>
+
+<ParamField query="--llm-judge" type="flag">
+  With `--verbosity`: let an LLM override the heuristic level. Requires an API key. Gives a more nuanced result at the cost of an LLM call. Cannot be used without `--verbosity`.
+</ParamField>
+
+```bash
+# Preview verbosity recommendation
+headroom learn --verbosity
+
+# Apply with LLM override
+headroom learn --verbosity --llm-judge --apply
+
+# Enable the output shaper for a running proxy
+# After --apply, the shaper is live on any running proxy automatically.
+# For future proxy startups, set:
+export HEADROOM_OUTPUT_SHAPER=1
+headroom wrap claude
+```
+
+<Note>
+  Writing the verbosity level with `--apply` is not enough on its own — the output shaper is **off by default**. When `--apply` is used, `learn` automatically hot-enables the shaper on any proxy that is currently running. For future proxy starts, set `HEADROOM_OUTPUT_SHAPER=1` before `headroom wrap` or `headroom proxy`.
+</Note>
+
+---
+
+## What gets written
+
+When `--apply` is set, `learn` writes a marker-fenced block to the target file. The block contains structured recommendations that tell the agent:
+
+- Paths and modules that have historically caused failures
+- Environment-specific facts (which test runner to use, where config lives)
+- User preferences discovered from behavioral signals
+- Patterns to avoid and alternatives to try first
+
+```markdown
+<!-- headroom:learned-context -->
+## Headroom: Learned Context
+
+**Common failure patterns:**
+- `pytest tests/` fails — use `python -m pytest` instead (missing PATH)
+- Import `mypackage` fails until `pip install -e .` is run from project root
+
+**Env facts:**
+- Node version: 20.x (nvm managed)
+- Python: 3.11 via pyenv
+<!-- /headroom:learned-context -->
+```
+
+Re-running `learn --apply` is idempotent — the block is replaced in place rather than appended again.
+
+---
+
+## Examples
+
+```bash
+# Analyze Claude Code failures in the current project (dry run)
+headroom learn
+
+# Write to the team-shared CLAUDE.md
+headroom learn --apply --target CLAUDE.md
+
+# Analyze all Codex projects in parallel
+headroom learn --agent codex --all --apply --workers 4
+
+# Use GPT-4o for analysis
+headroom learn --model gpt-4o --apply
+
+# Learn verbosity and immediately apply to running proxy
+headroom learn --verbosity --apply
+```

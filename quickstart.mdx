@@ -1,47 +1,282 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Headroom in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install Headroom, compress your first LLM messages, check token savings, and explore proxy mode — all in under 5 minutes with Python or TypeScript."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide takes you from a fresh install to a compressed LLM call with measured savings. You will install the package, compress a realistic message thread containing a large tool output, send the result to your LLM, and inspect how many tokens were removed. If you prefer zero code changes, the final section covers proxy mode — point any existing client at `http://localhost:8787` and compression happens automatically.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+## Step 1: Install
 
-## Prerequisites
+<Tabs>
+  <Tab title="Python">
+    ```bash
+    pip install "headroom-ai[all]"
+    ```
 
-Before you begin, you must have:
+    This installs the `headroom` CLI, the `compress()` library function, the local proxy, the Kompress-v2-base model, and all compressors. Requires **Python 3.10+**.
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+    <Note>
+      Prefer `pipx` or `uv`? Use an explicit Python 3.13 interpreter to unlock the full savings dashboard (the `Proxy $ Saved` tile requires LiteLLM, which does not yet support Python 3.14+):
 
-## Get started
+      ```bash
+      pipx install --python python3.13 "headroom-ai[all]"
+      # or
+      uv tool install --python 3.13 "headroom-ai[all]"
+      ```
+    </Note>
+  </Tab>
+  <Tab title="TypeScript">
+    ```bash
+    npm install headroom-ai
+    ```
 
-<Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+    The TypeScript SDK is a library you import — it does **not** include the `headroom` CLI. The SDK sends messages to a local Headroom proxy for compression. Start the proxy before using the SDK:
 
     ```bash
-    npm install your-package
+    pip install "headroom-ai[proxy]"
+    headroom proxy --port 8787
     ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  </Tab>
+</Tabs>
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+## Step 2: Compress Messages
 
-    ```bash
-    your-cli start
+Pass your message list to `compress()`. Headroom returns the same list in the same format, with tool outputs, logs, and repeated content stripped down to their essential information.
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from headroom import compress
+    import json
+
+    messages = [
+        {"role": "system", "content": "You analyze search results."},
+        {"role": "user", "content": "Search for Python tutorials."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"q": "python"}'},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({
+                "results": [
+                    {"title": f"Result {i}", "snippet": f"Description {i}", "score": 100 - i}
+                    for i in range(500)
+                ]
+            }),
+        },
+        {"role": "user", "content": "What are the top 3 results?"},
+    ]
+
+    result = compress(messages, model="gpt-4o")
     ```
-  </Step>
-</Steps>
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    import { compress } from 'headroom-ai';
+
+    const messages = [
+      { role: 'system' as const, content: 'You analyze search results.' },
+      { role: 'user' as const, content: 'Search for Python tutorials.' },
+      {
+        role: 'assistant' as const,
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function' as const,
+          function: { name: 'search', arguments: '{"q": "python"}' },
+        }],
+      },
+      {
+        role: 'tool' as const,
+        tool_call_id: 'call_1',
+        content: JSON.stringify({
+          results: Array.from({ length: 500 }, (_, i) => ({
+            title: `Result ${i}`,
+            snippet: `Description ${i}`,
+            score: 100 - i,
+          })),
+        }),
+      },
+      { role: 'user' as const, content: 'What are the top 3 results?' },
+    ];
+
+    const result = await compress(messages, {
+      model: 'gpt-4o',
+      baseUrl: 'http://localhost:8787',
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Step 3: Send to Your LLM
+
+Use `result.messages` exactly as you would the originals. The compressed messages are in the same format — you do not need to change any other part of your call.
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from openai import OpenAI
+
+    client = OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=result.messages,   # drop-in replacement
+    )
+
+    print(response.choices[0].message.content)
+    ```
+
+    Works identically with the Anthropic SDK:
+
+    ```python
+    from anthropic import Anthropic
+    from headroom import compress
+
+    client = Anthropic()
+    compressed = compress(messages, model="claude-sonnet-4-5-20250929")
+    response = client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        messages=compressed.messages,
+        max_tokens=1024,
+    )
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    import OpenAI from 'openai';
+
+    const client = new OpenAI();
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o',
+      messages: result.messages,   // drop-in replacement
+    });
+
+    console.log(response.choices[0].message.content);
+    ```
+  </Tab>
+</Tabs>
+
+## Step 4: Check Your Savings
+
+The `CompressResult` object carries a full accounting of what was removed.
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    print(f"Tokens before: {result.tokens_before}")
+    print(f"Tokens after:  {result.tokens_after}")
+    print(f"Tokens saved:  {result.tokens_saved}")
+    print(f"Compression:   {result.compression_ratio:.0%}")
+    print(f"Transforms:    {result.transforms_applied}")
+    ```
+
+    Example output for a 500-item JSON search result:
+
+    ```
+    Tokens before: 45000
+    Tokens after:  4500
+    Tokens saved:  40500
+    Compression:   90%
+    Transforms:    ['smart_crusher', 'cache_aligner']
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    console.log(`Tokens before: ${result.tokensBefore}`);
+    console.log(`Tokens after:  ${result.tokensAfter}`);
+    console.log(`Tokens saved:  ${result.tokensSaved}`);
+    console.log(`Compression:   ${(result.compressionRatio * 100).toFixed(0)}%`);
+    console.log(`Transforms:    ${result.transformsApplied.join(', ')}`);
+    ```
+
+    Example output:
+
+    ```
+    Tokens before: 45000
+    Tokens after:  4500
+    Tokens saved:  40500
+    Compression:   90%
+    Transforms:    smart_crusher, cache_aligner
+    ```
+  </Tab>
+</Tabs>
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  The `compression_ratio` field expresses the **fraction of tokens removed**, not the fraction kept. A value of `0.9` means 90% of tokens were eliminated. A value of `0.35` means 65% were saved (`1 - 0.35`).
 </Tip>
+
+## Alternative: Proxy Mode (Zero Code Changes)
+
+If you do not want to modify any existing code, run Headroom as a local HTTP proxy and point your client at it. Every request flows through the compression pipeline automatically.
+
+```bash
+# Start the proxy
+headroom proxy --port 8787
+
+# Point Claude Code at it
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+# Any OpenAI-compatible client
+OPENAI_BASE_URL=http://localhost:8787/v1 your-app
+```
+
+Check cumulative savings at any time:
+
+```bash
+curl http://localhost:8787/stats
+# {"requests_total": 42, "tokens_saved_total": 125000, ...}
+
+headroom perf          # pretty-printed savings summary
+headroom dashboard     # open live dashboard in browser
+```
+
+To wrap a coding agent in one command (starts the proxy and injects the correct environment):
+
+```bash
+headroom wrap claude     # Claude Code
+headroom wrap codex      # OpenAI Codex
+headroom wrap aider      # Aider
+headroom wrap cursor     # Cursor (prints base URLs for manual setup)
+```
+
+## What Gets Compressed
+
+Headroom auto-detects content type and routes each block to the best compressor. No configuration is needed — the biggest savings come automatically from tool outputs, which are almost always over-verbose JSON or log files.
+
+| Content type | Compressor | Typical savings |
+|---|---|---|
+| JSON arrays | SmartCrusher | 70–90% |
+| Source code | CodeCompressor | 40–70% |
+| Build / test logs | LogCompressor | 80–95% |
+| Search results | SearchCompressor | 60–80% |
+| Plain text | Kompress | 30–50% |
+
+<Note>
+  Messages shorter than 250 tokens are left unchanged by default. This threshold is configurable via `CompressConfig(min_tokens_to_compress=...)` — lower it for voice agents with short turns.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Docker tags, pipx, uv, Windows setup, and environment variables.
+  </Card>
+  <Card title="Proxy Server" icon="server" href="/guides/proxy">
+    Configure the proxy, run it as a persistent service, and view the dashboard.
+  </Card>
+  <Card title="How Compression Works" icon="microchip" href="/concepts/how-compression-works">
+    ContentRouter, SmartCrusher, CodeCompressor, and Kompress-v2-base in depth.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/operations/configuration">
+    CompressConfig fields, target ratios, protecting recent messages, and more.
+  </Card>
+</CardGroup>
